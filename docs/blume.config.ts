@@ -20,6 +20,12 @@ export default defineConfig({
   description:
     "Unified async Python batch API for OpenAI, Anthropic, Google, Groq, Mistral, Together, and xAI.",
   deployment: { site: "https://batchwork.ajanraj.com" },
+  github: {
+    branch: "main",
+    dir: "docs/docs",
+    owner: "ajanraj",
+    repo: "batchwork-ai",
+  },
   logo: { href: "/", image: "/logo.svg", text: "Batchwork" },
   navigation: {
     sidebar: docsSidebar,
