@@ -35,6 +35,8 @@ redis = ["upstash-redis>=1.4,<2"]
 
 [project.urls]
 Documentation = "https://batchwork.ajanraj.com"
+Issues = "https://github.com/ajanraj/batchwork-ai/issues"
+Repository = "https://github.com/ajanraj/batchwork-ai"
 
 [dependency-groups]
 dev = [
