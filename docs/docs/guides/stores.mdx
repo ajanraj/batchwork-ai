@@ -20,7 +20,7 @@ poller = BatchPoller(MemoryBatchStore())
 Redis support is optional and imported only when a Redis store is created:
 
 ```bash
-uv add "batchwork[redis]"
+uv add "batchwork-ai[redis]"
 ```
 
 Without the extra, creating the default Redis client raises `MissingDependencyError`. Configure Upstash's standard variables:

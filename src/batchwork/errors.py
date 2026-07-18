@@ -38,7 +38,7 @@ class MissingDependencyError(BatchworkError):
 
     def __init__(self, package: str, extra: str) -> None:
         super().__init__(
-            f'batchwork: install the optional dependency with `uv add "batchwork[{extra}]"` '
+            f'batchwork: install the optional dependency with `uv add "batchwork-ai[{extra}]"` '
             f"to use {package}."
         )
 
