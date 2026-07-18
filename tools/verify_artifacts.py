@@ -7,6 +7,7 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from email.parser import Parser
 from pathlib import Path, PurePosixPath
 
 FORBIDDEN_COMPONENTS = frozenset(
@@ -42,6 +43,18 @@ def normalized_members(names: list[str], archive: Path) -> list[PurePosixPath]:
 def verify_wheel(wheel: Path) -> None:
     with zipfile.ZipFile(wheel) as archive:
         members = normalized_members(archive.namelist(), wheel)
+        metadata_members = [
+            member
+            for member in members
+            if member.name == "METADATA" and member.parent.name.endswith(".dist-info")
+        ]
+        if len(metadata_members) != 1:
+            fail(f"{wheel.name} must contain exactly one dist-info/METADATA file")
+        metadata = Parser().parsestr(archive.read(str(metadata_members[0])).decode())
+
+    distribution_version = metadata.get("Version")
+    if not distribution_version:
+        fail(f"{wheel.name} metadata does not contain Version")
 
     invalid = [
         str(member)
@@ -66,6 +79,7 @@ import pathlib
 import sys
 
 wheel = pathlib.Path(sys.argv[1]).resolve()
+expected_version = sys.argv[2]
 
 class BlockRedis(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
@@ -77,10 +91,21 @@ sys.meta_path.insert(0, BlockRedis())
 sys.path.insert(0, str(wheel))
 import batchwork
 assert str(wheel) in batchwork.__file__, batchwork.__file__
+assert batchwork.__version__ == expected_version, (
+    batchwork.__version__,
+    expected_version,
+)
 """
     with tempfile.TemporaryDirectory() as temporary_directory:
         result = subprocess.run(
-            [sys.executable, "-I", "-c", import_check, str(wheel.resolve())],
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                import_check,
+                str(wheel.resolve()),
+                distribution_version,
+            ],
             cwd=temporary_directory,
             capture_output=True,
             check=False,
