@@ -1,0 +1,38 @@
+---
+const benefits = [
+  {
+    key: "01",
+    title: "The same job API",
+    description: "Submit, poll, wait, cancel, resume, and collect results the same way for every provider.",
+  },
+  {
+    key: "02",
+    title: "Native batch endpoints",
+    description: "Requests still go to each provider's own batch API and use its batch pricing.",
+  },
+  {
+    key: "03",
+    title: "Results keyed by custom_id",
+    description: "Handle unordered successes, errors, usage, embeddings, and images without provider-specific parsing.",
+  },
+];
+---
+
+<section class="home-section benefits reveal" aria-labelledby="benefits-title">
+  <div class="home-shell">
+    <div class="section-heading section-heading--center">
+      <p class="section-kicker">What Batchwork handles</p>
+      <h2 id="benefits-title">One Python API for every provider.</h2>
+      <p>Submit requests and read results the same way across OpenAI, Anthropic, Gemini, and the rest. Batchwork handles each provider's files, endpoints, and output formats.</p>
+    </div>
+    <div class="benefit-list">
+      {benefits.map((benefit) => (
+        <article>
+          <span>{benefit.key}</span>
+          <h3>{benefit.title}</h3>
+          <p>{benefit.description}</p>
+        </article>
+      ))}
+    </div>
+  </div>
+</section>

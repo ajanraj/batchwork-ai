@@ -1,0 +1,31 @@
+---
+import { footerSections } from "../../lib/navigation";
+
+const year = new Date().getFullYear();
+---
+
+<footer class="site-footer">
+  <div class="home-shell site-footer__grid">
+    <div class="site-footer__brand">
+      <a href="/" aria-label="Batchwork home">Batchwork<span>.</span></a>
+      <p>One async Python API for seven provider batch services.</p>
+      <p class="site-footer__meta">Python 3.11+ · MIT licensed</p>
+    </div>
+    <nav class="site-footer__nav" aria-label="Footer navigation">
+      {footerSections.map((section) => (
+        <div>
+          <h2>{section.title}</h2>
+          <ul>
+            {section.links.map((link) => (
+              <li><a href={link.href}>{link.label}</a></li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </nav>
+  </div>
+  <div class="home-shell site-footer__bottom">
+    <p>© {year} Ajanraj</p>
+    <p>Batch APIs for Python.</p>
+  </div>
+</footer>

@@ -1,0 +1,36 @@
+---
+title: Security
+description: Credential, media, webhook, and replay-safety boundaries.
+---
+
+## Credentials
+
+Pass secrets through provider environment variables or `ProviderCredentials`; do not place them in requests, metadata, logs, or `custom_id`. Per-call values override client configuration, which overrides the environment. Injected base URLs and headers are trusted application configuration.
+
+## Remote media
+
+The default media resolver accepts bytes, data URLs, public HTTPS URLs, and provider file references. For fetched URLs it rejects credentials, private or reserved addresses, DNS rebinding, non-HTTPS redirects, oversized bodies, and unsupported media. Keep `BatchLimits.max_request_bytes` appropriate for your service.
+
+## Provider-direct URLs
+
+Some URLs are not fetched by Batchwork. They are passed directly to the selected provider and retrieved under that provider's network, authentication, retention, and size policies. Batchwork therefore does not DNS-validate, content-sniff, or byte-limit those resources.
+
+Direct modes include OpenAI image URLs and Responses PDF URLs, Anthropic image/PDF URLs, Groq image URLs, Mistral HTTPS PDF URLs, xAI image/file URLs, and constrained Google Gemini Files/YouTube URLs. Other remote media is resolved and inlined where the adapter supports it.
+
+Treat provider-direct URLs as provider-visible input. Do not assume `DefaultMediaResolver` SSRF controls apply to them.
+
+## Outbound webhooks
+
+The default webhook path requires HTTPS, rejects URL credentials, resolves every address as globally routable, and pins delivery to the validated address. It does not follow redirects. A custom URL validator or transport replaces part of that boundary, so apply equivalent SSRF and redirect controls.
+
+## Signatures and replay protection
+
+`sign_webhook()` and `verify_webhook()` use Standard Webhooks-compatible HMAC-SHA256 headers with a five-minute timestamp tolerance. Verify the exact raw request body before JSON parsing. Each delivery attempt has a replay identity; the stable event identity remains suitable for consumer idempotency.
+
+`MemoryWebhookReplayStore` is atomic only within one process. Distributed receivers should implement `AtomicWebhookReplayStore.claim()` with an atomic write-if-absent and expiry operation.
+
+`verify_webhook()` returns a claimed `VerifiedWebhook`. If handling fails after verification, call `await verified.release()` before returning a retryable response so the same signed delivery can be verified again.
+
+## Delivery semantics
+
+The poller provides at-least-once delivery: it performs the completion side effect before persisting `delivered_at`. Consumers must deduplicate by event ID, and operators should retain undelivered records for retry rather than deleting them after a transient error.

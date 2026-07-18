@@ -1,0 +1,125 @@
+---
+title: Text
+description: Submit prompts, message history, tools, structured content, and media across seven providers.
+---
+
+All seven providers support text-output batches through `Batchwork.batch()`.
+
+## Prompt requests
+
+```python
+from batchwork import BatchRequest, Batchwork
+
+requests = [
+    BatchRequest(custom_id="summary-1", prompt="Summarize the first document."),
+    BatchRequest(custom_id="summary-2", prompt="Summarize the second document."),
+]
+
+async with Batchwork() as client:
+    job = await client.batch(model="openai/gpt-5.6-sol", requests=requests)
+```
+
+A request must contain exactly one of `prompt` or non-empty `messages`.
+
+## Messages, tools, and media
+
+```python
+from batchwork import (
+    BatchRequest,
+    FunctionTool,
+    ImagePart,
+    SystemMessage,
+    TextPart,
+    UserMessage,
+)
+
+request = BatchRequest(
+    custom_id="chart-1",
+    messages=[
+        SystemMessage(content="Answer from the supplied chart."),
+        UserMessage(
+            content=[
+                TextPart(text="Which region grew fastest?"),
+                ImagePart(image="https://example.com/chart.png", media_type="image/png"),
+            ]
+        ),
+    ],
+    tools=[
+        FunctionTool(
+            name="lookup_metric",
+            description="Look up a metric by region.",
+            input_schema={
+                "type": "object",
+                "properties": {"region": {"type": "string"}},
+                "required": ["region"],
+            },
+        )
+    ],
+)
+```
+
+Message history supports system, user, assistant, and tool messages plus provider-specific content parts. Provider and model support still applies; unsupported content fails during local serialization.
+
+## Model kinds
+
+String models use `provider/model`. OpenAI strings default to Chat Completions, xAI strings default to Responses, and other providers use their native chat/message shape.
+
+Use `ModelSpec` when selecting an OpenAI endpoint explicitly:
+
+```python
+from batchwork import BatchProvider, ModelKind, ModelSpec
+
+model = ModelSpec(
+    provider=BatchProvider.OPENAI,
+    model_id="gpt-5.6-sol",
+    kind=ModelKind.RESPONSES,
+)
+```
+
+`ModelKind` is not a portable promise that every provider implements Chat, Responses, and Completion endpoints.
+
+## Generic settings are translated
+
+Batchwork accepts shared request settings, then adapts them to each provider. A field may be renamed, nested, constrained, or omitted when the selected provider/model does not support it.
+
+Examples:
+
+- OpenAI reasoning models may rename token limits and remove sampling or penalty fields.
+- Anthropic thinking can increase the token budget and remove sampling fields.
+- Mistral rewrites `seed` to `random_seed` and ignores frequency/presence penalties.
+- Google nests generation settings under `generationConfig`.
+- Every adapter removes top-level `stream`; provider batch APIs do not perform token streaming.
+
+Use the relevant [provider page](/docs/providers) before relying on a generic setting.
+
+## Provider options
+
+Provider-specific values use SDK-style camelCase keys under the provider name:
+
+```python
+request = BatchRequest(
+    custom_id="reasoning-1",
+    prompt="Solve the problem and explain the answer.",
+    provider_options={
+        "openai": {"reasoningEffort": "high"},
+    },
+)
+```
+
+Options are provider- and endpoint-specific. Together AI additionally forwards unrecognized Together option keys to the wire request; treat them as trusted provider configuration.
+
+## Input media versus output modality
+
+An image accepted by a text model is an **input**. It does not imply that the provider supports generated image **output** through `batch_images()`.
+
+| Provider    | Common text-request inputs beyond text                         |
+| ----------- | -------------------------------------------------------------- |
+| OpenAI      | Images; PDFs for Responses; supported audio/file forms         |
+| Anthropic   | Images and PDFs/documents                                      |
+| Google      | Images and inline media; constrained Files/YouTube direct URLs |
+| Groq        | Images                                                         |
+| Mistral     | Images and PDFs                                                |
+| Together AI | Images plus inline PDF, text-file, and WAV/MP3 data            |
+| xAI         | Images and file URLs/provider file references                  |
+
+See [Security](/docs/guides/security#provider-direct-urls) for the difference between URLs Batchwork downloads and URLs passed directly to a provider.

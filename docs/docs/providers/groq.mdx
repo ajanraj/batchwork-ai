@@ -1,0 +1,65 @@
+---
+title: Groq
+description: Groq file-backed chat batches with OpenAI-compatible result files.
+---
+
+Groq uses an OpenAI-compatible file-backed chat batch. Batchwork builds JSONL, uploads it, creates the batch, then streams output and error files through the shared normalized result model.
+
+## At a glance
+
+| Property          | Batchwork behavior               |
+| ----------------- | -------------------------------- |
+| Output modalities | Text                             |
+| Text inputs       | Messages, tools, and images      |
+| Endpoint          | `/v1/chat/completions`           |
+| Submission        | JSONL file upload                |
+| Results           | Output and error JSONL files     |
+| Batch metadata    | Forwarded                        |
+| Webhooks          | Managed polling only             |
+| Credential        | `GROQ_API_KEY`                   |
+| Default base URL  | `https://api.groq.com/openai/v1` |
+
+## Example
+
+```python
+from batchwork import BatchRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch(
+        model="groq/llama-3.3-70b-versatile",
+        requests=[
+            BatchRequest(custom_id="a", prompt="Summarize the first document."),
+            BatchRequest(custom_id="b", prompt="Summarize the second document."),
+        ],
+    )
+```
+
+## Lifecycle
+
+1. Requests become OpenAI-shaped JSONL lines.
+2. The serializer initially produces `/openai/v1/chat/completions`; the Groq adapter normalizes the batch endpoint to `/v1/chat/completions`.
+3. Batchwork uploads through `/files` and creates `/batches` with a 24-hour completion window and optional metadata.
+4. `poll()` retrieves the batch object.
+5. `results()` streams output and error files.
+6. `cancel()` calls the provider cancel route.
+
+## Options and translation
+
+Groq-specific options include `parallelToolCalls`, `reasoningFormat`, `reasoningEffort`, and `serviceTier`. Assistant `ReasoningPart` content is emitted as Groq’s `reasoning` field. Common messages, function tools, tool choice, and request settings use the OpenAI-compatible chat shape. Unsupported arbitrary Groq options are not passed through.
+
+## Image input
+
+Groq text batches can consume supported image inputs. Other file media types are rejected during serialization. “Image generation: No” means Groq is not exposed through `batch_images()`; it does not mean vision input is unavailable.
+
+## Results
+
+Text, usage, and item errors are normalized through the OpenAI-compatible result parser. Provider-specific fields remain in `result.response`. Batch metadata is forwarded when creating the provider batch.
+
+Groq does not support embeddings or image-generation output through Batchwork.
+
+## Official references
+
+- [Groq Batch API](https://console.groq.com/docs/batch)
+- [Groq vision](https://console.groq.com/docs/vision)
+
+See [Jobs](/docs/guides/jobs), [Results](/docs/guides/results), and [Text and messages](/docs/modalities/text).

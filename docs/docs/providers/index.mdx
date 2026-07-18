@@ -1,0 +1,64 @@
+---
+title: Providers
+description: Compare provider modalities, input media, batch transport, metadata, and webhook behavior.
+---
+
+Batchwork exposes one lifecycle across seven provider-native batch APIs. The provider still controls models, pricing, limits, processing time, and supported request features.
+
+## Output modalities
+
+| Provider | Text | Embeddings | Image generation |
+| --- | --- | --- | --- |
+| [OpenAI](/docs/providers/openai) | Yes | Yes | Yes |
+| [Anthropic](/docs/providers/anthropic) | Yes | No | No |
+| [Google Gemini](/docs/providers/google) | Yes | Yes | Yes |
+| [Groq](/docs/providers/groq) | Yes | No | No |
+| [Mistral](/docs/providers/mistral) | Yes | Yes | No |
+| [Together AI](/docs/providers/together) | Yes | No | No |
+| [xAI](/docs/providers/xai) | Yes | No | Yes |
+
+This matrix describes generated output. Text requests can accept additional media inputs.
+
+## Text-request input media
+
+| Provider | Images | PDFs/files | Audio | Direct provider URLs |
+| --- | --- | --- | --- | --- |
+| OpenAI | Yes | Responses PDFs/files | Supported forms | Images; PDFs for Responses |
+| Anthropic | Yes | PDFs/documents | No | Images and PDFs |
+| Google | Yes | Inline/provider files | Supported inline forms | Constrained Files and YouTube URLs |
+| Groq | Yes | No | No | Images |
+| Mistral | Yes | PDFs | No | HTTPS PDF URLs |
+| Together AI | Yes | Inline PDF/text | Inline WAV/MP3 | Generally downloaded and inlined |
+| xAI | Yes | File URLs/provider IDs | No | Images and supported file URLs |
+
+Provider/model support applies. See [Text and messages](/docs/modalities/text) and [Security](/docs/guides/security#provider-direct-urls).
+
+## Submission and results
+
+| Provider | Submission | Results |
+| --- | --- | --- |
+| OpenAI | JSONL file upload | Output and error JSONL files |
+| Anthropic | Inline Message Batch | Same-origin JSONL result URL |
+| Google | Inline long-running operation | Inline operation response only |
+| Groq | JSONL file upload | Output and error JSONL files |
+| Mistral | JSONL file upload | Output and error JSONL files |
+| Together AI | Upload initiation, presigned PUT, preprocessing | Output and error JSONL files |
+| xAI | JSONL file upload | Paginated results endpoint |
+
+## Batch-level metadata
+
+The `metadata=` submission argument is not supported uniformly.
+
+| Forwarded                          | Ignored                |
+| ---------------------------------- | ---------------------- |
+| OpenAI, Groq, Mistral, Together AI | Anthropic, Google, xAI |
+
+Request-level provider metadata may still be available through `provider_options`. Google uses provider request metadata internally to preserve `custom_id` correlation.
+
+## Webhooks
+
+OpenAI is the only provider with a native inbound batch-webhook helper. Every provider can use Batchwork-managed polling and signed outbound completion delivery through `BatchPoller`.
+
+## Credentials
+
+See [Configuration](/docs/configuration#environment-variables) for API keys, endpoint overrides, and precedence. Each provider page documents its default API root and authentication style.

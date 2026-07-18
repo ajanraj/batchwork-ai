@@ -1,0 +1,79 @@
+---
+title: Anthropic
+description: Anthropic Message Batches with inline submission and same-origin streamed results.
+---
+
+Anthropic accepts Message Batches inline rather than through a JSONL upload. Batchwork translates messages and tools into Anthropic-native blocks, polls the batch object, and streams the provider’s JSONL results URL.
+
+## At a glance
+
+| Property | Batchwork behavior |
+| --- | --- |
+| Output modalities | Text |
+| Text inputs | Messages, tools, images, PDFs/documents, provider file references |
+| Endpoint | `/v1/messages/batches` |
+| Submission | Inline `{requests: [{custom_id, params}]}` |
+| Results | JSONL from a provider-returned same-origin URL |
+| Batch metadata | Ignored |
+| Webhooks | Managed polling only |
+| Credential | `ANTHROPIC_API_KEY` |
+| Default base URL | `https://api.anthropic.com` |
+
+## Example
+
+```python
+from batchwork import BatchRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch(
+        model="anthropic/claude-sonnet-4-6",
+        requests=[
+            BatchRequest(custom_id="a", prompt="Summarize the first report."),
+            BatchRequest(custom_id="b", prompt="Summarize the second report."),
+        ],
+    )
+```
+
+## Lifecycle
+
+1. Batchwork serializes every request into Anthropic `params` and removes `stream`.
+2. `POST /v1/messages/batches` receives all requests inline.
+3. `poll()` retrieves `/v1/messages/batches/{id}`.
+4. `results()` streams JSONL from the returned `results_url`.
+5. `cancel()` calls `/v1/messages/batches/{id}/cancel`.
+
+Batch-level `metadata=` is not forwarded. Anthropic request-level user metadata remains available through provider options.
+
+## Messages and tools
+
+Consecutive user/tool messages and assistant messages are grouped into Anthropic-native content blocks. System messages move to the top-level system field where possible. Tools, tool results, thinking blocks, files, documents, citations, cache control, MCP servers, containers, and structured output receive provider-specific translation.
+
+## Model-aware settings
+
+- A default `max_tokens` is selected when omitted and capped for recognized models.
+- Enabling thinking without a budget defaults the thinking budget to 1,024 tokens.
+- Thinking can increase `max_tokens` and remove temperature, top-k, and top-p.
+- Known models that reject sampling do not receive sampling fields.
+- Known compatible models do not receive both temperature and top-p together.
+
+Anthropic provider options include speed, inference geography, fallbacks, cache control, user metadata, MCP/container settings, context management, output effort, thinking, tool controls, document context/citations, and strict-tool behavior where supported.
+
+## Media and security
+
+Supported image and PDF URLs can be passed directly to Anthropic. Other media sources are resolved before serialization.
+
+The provider-returned `results_url` must match the configured Anthropic API scheme, normalized host, and effective port. Embedded credentials, cross-origin hosts, alternate ports, and HTTP downgrade are rejected before fetching. This also applies when using a custom gateway.
+
+## Results
+
+Successful items concatenate Anthropic text blocks into `result.text`, normalize usage, and retain the raw message in `result.response`. Tool-use and other non-text blocks remain available through the raw response. Provider errored, expired, and canceled items map to normalized result statuses.
+
+Anthropic does not support embedding or image-generation output through Batchwork.
+
+## Official references
+
+- [Anthropic Message Batches](https://docs.anthropic.com/en/docs/build-with-claude/batch-processing)
+- [Anthropic vision](https://docs.anthropic.com/en/docs/build-with-claude/vision)
+- [Anthropic PDF support](https://docs.anthropic.com/en/docs/build-with-claude/pdf-support)
+
+See [Text and messages](/docs/modalities/text), [Results](/docs/guides/results), and [Security](/docs/guides/security).

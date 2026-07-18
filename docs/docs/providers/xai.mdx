@@ -1,0 +1,88 @@
+---
+title: xAI
+description: xAI text and image batches with file upload and paginated result retrieval.
+---
+
+xAI combines a file-backed submission with a paginated results API. String models use the Responses request shape; image models use `/v1/images/generations`.
+
+## At a glance
+
+| Property          | Batchwork behavior                                    |
+| ----------------- | ----------------------------------------------------- |
+| Output modalities | Text and image generation                             |
+| Text inputs       | Messages, tools, images, file URLs, provider file IDs |
+| Endpoints         | `/v1/responses`, `/v1/images/generations`             |
+| Submission        | JSONL file upload, then `/batches`                    |
+| Results           | Paginated `/batches/{id}/results` endpoint            |
+| Batch metadata    | Ignored                                               |
+| Webhooks          | Managed polling only                                  |
+| Credential        | `XAI_API_KEY`                                         |
+| Default base URL  | `https://api.x.ai/v1`                                 |
+
+## Text example
+
+```python
+from batchwork import BatchRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch(
+        model="xai/grok-4",
+        requests=[BatchRequest(custom_id="summary", prompt="Summarize this report.")],
+    )
+```
+
+String xAI models automatically use Responses serialization.
+
+## Image generation
+
+```python
+from batchwork import BatchImageRequest
+
+job = await client.batch_images(
+    model="xai/grok-imagine-image",
+    requests=[
+        BatchImageRequest(
+            custom_id="city",
+            prompt="A quiet futuristic city at dawn.",
+            n=2,
+            aspect_ratio="16:9",
+        )
+    ],
+)
+```
+
+Generic `n` and `aspect_ratio` are supported. Generic `size` and `seed` are not serialized. xAI provider options include output format, sync mode, resolution, quality, user, and provider-level aspect ratio.
+
+## Lifecycle
+
+1. JSONL lines contain `custom_id`, `method: "POST"`, endpoint, and body.
+2. Batchwork uploads the file through `/files` without a purpose.
+3. `/batches` receives the file ID and fixed name `batchwork`; batch metadata is not forwarded.
+4. `poll()` retrieves `/batches/{id}`.
+5. `results()` requests up to 100 records per page and follows `pagination_token`.
+6. `cancel()` calls `/batches/{id}:cancel`.
+
+Batch status is normalized from xAI request counts: pending work is in progress; all-canceled work is canceled; otherwise a batch with no pending requests is completed, even if some items errored.
+
+## Responses translation
+
+xAI options include log probabilities, reasoning effort/summary, storage, includes, previous response ID, tools, and tool choice. Setting `store=False` automatically includes encrypted reasoning content. Function schemas have `additionalProperties: false` removed recursively where xAI requires it.
+
+Text inputs can include images plus supported file URLs and provider file IDs. Inline images are supported; inline generic file data is not serialized as an xAI input file.
+
+## Results
+
+Text results normalize output text and usage. Image normalization accepts `data`, a `url`, or both. The serializer requests base64-oriented image output, but provider-returned URLs may be signed and short-lived; consume them promptly.
+
+Errors may arrive through top-level `error_message` or nested error data. Successful results retain the selected completion object in `result.response`; errored results retain the raw result item.
+
+xAI does not support embeddings through Batchwork.
+
+## Official references
+
+- [xAI Batches API](https://docs.x.ai/developers/rest-api-reference/inference/batches)
+- [xAI Responses API](https://docs.x.ai/developers/model-capabilities/text/generate-text)
+- [xAI image generation](https://docs.x.ai/developers/model-capabilities/images/generation)
+- [xAI pricing](https://docs.x.ai/developers/pricing)
+
+See [Image generation](/docs/modalities/images), [Results](/docs/guides/results), and [Provider overview](/docs/providers).

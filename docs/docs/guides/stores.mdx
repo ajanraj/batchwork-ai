@@ -1,0 +1,53 @@
+---
+title: Stores
+description: Persist batches watched by BatchPoller.
+---
+
+`BatchPoller` depends on the async `BatchStore` protocol: `get(batch_id)`, `set(record)`, `delete(batch_id)`, and `list(delivered=None)`. Custom stores can implement that protocol without inheriting a Batchwork class.
+
+## Memory
+
+`MemoryBatchStore` is process-local and guarded by an async lock. It is suitable for development, tests, and one-process services; restarting the process loses tracked batches.
+
+```python
+from batchwork import BatchPoller, MemoryBatchStore
+
+poller = BatchPoller(MemoryBatchStore())
+```
+
+## Upstash Redis
+
+Redis support is optional and imported only when a Redis store is created:
+
+```bash
+uv add "batchwork[redis]"
+```
+
+Without the extra, creating the default Redis client raises `MissingDependencyError`. Configure Upstash's standard variables:
+
+```text
+UPSTASH_REDIS_REST_URL=https://...
+UPSTASH_REDIS_REST_TOKEN=...
+```
+
+With no injected client, `create_redis_store()` creates an async Upstash client from those variables:
+
+```python
+from batchwork import BatchPoller, create_redis_store
+
+store = create_redis_store(prefix="my-service")
+poller = BatchPoller(store)
+```
+
+The prefix defaults to `batchwork` and must not be empty. Use a distinct prefix when applications share a database.
+
+`RedisBatchStore` also accepts an injected sync or async Upstash-compatible client. In that case no client is created from the environment:
+
+```python
+from batchwork import BatchPoller, create_redis_store
+
+store = create_redis_store(redis=my_redis_client, prefix="my-service")
+poller = BatchPoller(store)
+```
+
+The base `batchwork` install does not import or require `upstash-redis`.

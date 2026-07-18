@@ -1,0 +1,200 @@
+{
+  "anthropic": {
+    "endpoint": "/v1/messages",
+    "body": {
+      "model": "model",
+      "max_tokens": 64,
+      "temperature": 0.5,
+      "top_k": 10,
+      "top_p": 0.9,
+      "stop_sequences": ["stop"],
+      "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+        {
+          "role": "assistant",
+          "content": [
+            {"type": "text", "text": "answer"},
+            {"type": "tool_use", "id": "call-1", "name": "lookup", "input": {"q": 1}}
+          ]
+        },
+        {
+          "role": "user",
+          "content": [{"type": "tool_result", "tool_use_id": "call-1", "content": "plain"}]
+        }
+      ]
+    }
+  },
+  "google": {
+    "endpoint": "/v1beta/models/model:generateContent",
+    "body": {
+      "generationConfig": {
+        "maxOutputTokens": 64,
+        "temperature": 0.5,
+        "topK": 10,
+        "topP": 0.9,
+        "frequencyPenalty": 0.2,
+        "presencePenalty": 0.3,
+        "stopSequences": ["stop"],
+        "seed": 42
+      },
+      "contents": [
+        {"role": "user", "parts": [{"text": "hello"}]},
+        {
+          "role": "model",
+          "parts": [
+            {"text": "thought", "thought": true},
+            {"text": "answer"},
+            {"functionCall": {"id": "call-1", "name": "lookup", "args": {"q": 1}}}
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "functionResponse": {
+                "id": "call-1",
+                "name": "lookup",
+                "response": {"name": "lookup", "content": "plain"}
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "groq": {
+    "endpoint": "/openai/v1/chat/completions",
+    "body": {
+      "model": "model",
+      "max_tokens": 64,
+      "temperature": 0.5,
+      "top_p": 0.9,
+      "frequency_penalty": 0.2,
+      "presence_penalty": 0.3,
+      "stop": ["stop"],
+      "seed": 42,
+      "messages": [
+        {"role": "user", "content": "hello"},
+        {
+          "role": "assistant",
+          "content": "answer",
+          "reasoning": "thought",
+          "tool_calls": [
+            {
+              "id": "call-1",
+              "type": "function",
+              "function": {"name": "lookup", "arguments": "{\"q\":1}"}
+            }
+          ]
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "plain"}
+      ]
+    }
+  },
+  "mistral": {
+    "endpoint": "/v1/chat/completions",
+    "body": {
+      "model": "model",
+      "max_tokens": 64,
+      "temperature": 0.5,
+      "top_p": 0.9,
+      "stop": ["stop"],
+      "random_seed": 42,
+      "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+        {
+          "role": "assistant",
+          "content": "thoughtanswer",
+          "tool_calls": [
+            {
+              "id": "call-1",
+              "type": "function",
+              "function": {"name": "lookup", "arguments": "{\"q\":1}"}
+            }
+          ]
+        },
+        {"role": "tool", "name": "lookup", "tool_call_id": "call-1", "content": "plain"}
+      ]
+    }
+  },
+  "openai": {
+    "endpoint": "/v1/chat/completions",
+    "body": {
+      "model": "model",
+      "max_tokens": 64,
+      "temperature": 0.5,
+      "top_p": 0.9,
+      "frequency_penalty": 0.2,
+      "presence_penalty": 0.3,
+      "stop": ["stop"],
+      "seed": 42,
+      "messages": [
+        {"role": "user", "content": "hello"},
+        {
+          "role": "assistant",
+          "content": "answer",
+          "tool_calls": [
+            {
+              "id": "call-1",
+              "type": "function",
+              "function": {"name": "lookup", "arguments": "{\"q\":1}"}
+            }
+          ]
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "plain"}
+      ]
+    }
+  },
+  "together": {
+    "endpoint": "/v1/chat/completions",
+    "body": {
+      "model": "model",
+      "max_tokens": 64,
+      "temperature": 0.5,
+      "top_p": 0.9,
+      "frequency_penalty": 0.2,
+      "presence_penalty": 0.3,
+      "stop": ["stop"],
+      "seed": 42,
+      "messages": [
+        {"role": "user", "content": "hello"},
+        {
+          "role": "assistant",
+          "content": "answer",
+          "reasoning_content": "thought",
+          "tool_calls": [
+            {
+              "id": "call-1",
+              "type": "function",
+              "function": {"name": "lookup", "arguments": "{\"q\":1}"}
+            }
+          ]
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "plain"}
+      ]
+    }
+  },
+  "xai": {
+    "endpoint": "/v1/responses",
+    "body": {
+      "model": "model",
+      "input": [
+        {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+        {"role": "assistant", "content": "answer"},
+        {
+          "type": "function_call",
+          "id": "call-1",
+          "call_id": "call-1",
+          "name": "lookup",
+          "arguments": "{\"q\":1}",
+          "status": "completed"
+        },
+        {"type": "function_call_output", "call_id": "call-1", "output": "plain"}
+      ],
+      "max_output_tokens": 64,
+      "temperature": 0.5,
+      "top_p": 0.9,
+      "seed": 42
+    }
+  }
+}

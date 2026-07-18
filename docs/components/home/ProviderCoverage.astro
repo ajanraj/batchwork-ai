@@ -1,0 +1,34 @@
+---
+import { providers } from "../../lib/providers";
+
+const outputLabel = (outputs: (typeof providers)[number]["outputs"]) => {
+  const labels = ["Text"];
+  if (outputs.embeddings) labels.push("Embeddings");
+  if (outputs.images) labels.push("Image output");
+  return labels.join(" · ");
+};
+---
+
+<section class="home-section provider-coverage reveal" aria-labelledby="providers-title">
+  <div class="home-shell">
+    <div class="section-heading section-heading--center">
+      <p class="section-kicker">Provider support</p>
+      <h2 id="providers-title">Text on all seven providers. Embeddings and images where supported.</h2>
+      <p>Input media and generated output are listed separately. A provider can accept images in a text request without supporting image generation.</p>
+    </div>
+
+    <div class="provider-table" role="table" aria-label="Provider modality coverage">
+      <div class="provider-table__head" role="row">
+        <span role="columnheader">Provider</span><span role="columnheader">Accepted input media</span><span role="columnheader">Batch outputs</span>
+      </div>
+      {providers.map((provider) => (
+        <a class="provider-table__row" role="row" href={provider.route}>
+          <strong role="cell"><img src={provider.icon} alt="" width="29" height="29" loading="lazy" />{provider.name}</strong>
+          <span role="cell">{provider.inputs.join(" · ") || "Text only"}</span>
+          <span role="cell">{outputLabel(provider.outputs)}</span>
+          <b aria-hidden="true">↗</b>
+        </a>
+      ))}
+    </div>
+  </div>
+</section>
