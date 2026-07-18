@@ -41,7 +41,9 @@ export const footerSections: FooterSection[] = [
     links: [
       { href: "/docs/api", label: "Public API" },
       { href: "/docs/faq", label: "FAQ" },
-      { href: "https://github.com/ajanraj", label: "Ajanraj on GitHub" },
+      { href: "https://github.com/ajanraj/batchwork-ai", label: "GitHub" },
+      { href: "https://pypi.org/project/batchwork-ai/", label: "PyPI" },
+      { href: "https://github.com/ajanraj/batchwork-ai/issues", label: "Issues" },
     ],
     title: "Reference",
   },

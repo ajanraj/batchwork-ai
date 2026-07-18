@@ -1,5 +1,7 @@
 # Batchwork
 
+![Batchwork — one typed API for provider-native AI batch jobs](docs/public/og-image.png)
+
 Unified async batch API for OpenAI, Anthropic, Google Gemini, Groq, Mistral, Together AI, and xAI. Access provider-native batch pricing—often up to 50% lower than standard synchronous requests—through one typed interface while Batchwork handles provider-specific serialization, submission, polling, and result normalization. Pricing and eligibility remain provider- and model-specific. Built for Python by Ajanraj.
 
 - One typed API for provider-native batch jobs
