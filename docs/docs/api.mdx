@@ -1,0 +1,98 @@
+---
+title: Public API
+description: Client, jobs, models, server primitives, stores, helpers, and errors.
+---
+
+Import the supported surface from `batchwork`. Server and store names are also available from `batchwork.server` and `batchwork.stores`.
+
+## Client
+
+### `Batchwork`
+
+The async client accepts optional `credentials`, `http_client`, `media_resolver`, and `timeout` arguments. Prefer `async with Batchwork() as client`; an injected HTTPX client remains caller-owned.
+
+| Method | Return behavior |
+| --- | --- |
+| `await batch(model, requests, ...)` | `BatchJob` for text/messages |
+| `await batch_embeddings(model, requests, ...)` | `BatchJob` for embeddings |
+| `await batch_images(model, requests, ...)` | `BatchJob` for images |
+| `await get_batch(ref)` | Resumed `BatchJob` |
+| `get_batch_results(ref)` | Async iterator of `BatchResult` |
+| `await cancel_batch(ref)` | `None` |
+| `await aclose()` | Closes client-owned resources |
+
+`get_batch_results()` is consumed with `async for`; do not await it directly.
+
+## Jobs
+
+`BatchJob` exposes `id`, `provider`, `status`, `request_counts`, and `snapshot`. The state properties reflect the latest cached snapshot.
+
+| Method | Return behavior |
+| --- | --- |
+| `await poll()` | Fresh `BatchSnapshot` |
+| `await wait(poll_interval=15, timeout=None, on_poll=None)` | Terminal `BatchSnapshot` |
+| `results()` | Async iterator of `BatchResult` |
+| `await collect()` | `list[BatchResult]` |
+| `await cancel()` | Snapshot retrieved after requesting cancellation |
+
+`wait()` itself returns an awaitable. Negative `poll_interval` or `timeout` values raise `ValueError`; timeout expiration raises `BatchTimeoutError`. See [Jobs](/docs/guides/jobs) and [Results](/docs/guides/results) for lifecycle details.
+
+## Models and providers
+
+String models require `provider/model` form. `gemini` aliases `google`, and `togetherai` aliases `together`. String xAI models use `ModelKind.RESPONSES`; other providers default to `ModelKind.CHAT`.
+
+`ModelSpec` selects `provider`, `model_id`, and an explicit `ModelKind` of `CHAT`, `RESPONSES`, or `COMPLETION`. See [Configuration](/docs/configuration#models) for examples and the supported modality matrix.
+
+## Requests and configuration
+
+- `BatchRequest` accepts exactly one of `prompt` or `messages`, plus generation settings inherited from `BatchRequestSettings` (`BatchDefaults`).
+- `BatchEmbeddingRequest` contains `value`, optional `custom_id`, and provider options.
+- `BatchImageRequest` and `BatchImageDefaults` configure provider-supported image batches.
+- `ProviderCredentials` contains an API key, base URL, and headers.
+- `BatchLimits` bounds request count, serialized request bytes, and upload bytes.
+
+Messages use `SystemMessage`, `UserMessage`, `AssistantMessage`, and `ToolMessage`. Content types include `TextPart`, `ImagePart`, `FilePart`, reasoning parts, tool-call/result parts, approval parts, and custom provider-defined parts.
+
+Tools use `FunctionTool` or `ProviderDefinedTool`, with `ToolChoice`, `NamedToolChoice`, and `ProviderToolChoice` controlling selection. Tool outputs include text, JSON, errors, execution denial, content, files, and custom output parts.
+
+All public models are frozen, reject unknown fields, and accept snake_case or camelCase input.
+
+## Results and state
+
+- `BatchSnapshot` contains provider status, counts, timestamps, and raw state.
+- `BatchResult` contains `custom_id`, normalized status, raw response, and any normalized text, embedding, images, usage, or error.
+- `BatchRef` identifies an existing batch without retaining a client.
+- `BatchImage`, `BatchUsage`, `BatchRequestCounts`, and `BatchResultError` describe normalized output details.
+
+State names include `BatchProvider`, `BatchStatus`, `BatchResultStatus`, and the exported `TERMINAL_STATUSES` constant.
+
+## Media
+
+`DefaultMediaResolver` implements the default HTTPS and inline-media policy. Applications may inject a `MediaResolver`; successful resolutions return `ResolvedMedia`. `ProviderFileReference` and tagged file-data types represent provider-owned or explicitly typed media sources. See [Security](/docs/guides/security#remote-media) for SSRF, redirect, and size boundaries.
+
+## Server and stores
+
+The server surface includes `BatchPoller`, `TrackTarget`, `TrackedBatch`, `TickResult`, `TickFailure`, `BatchWebhookEvent`, `WebhookResponse`, callback and credential protocols, signed-webhook helpers, replay-store protocols, URL validation, and `PinnedWebhookTransport`.
+
+Stores include `BatchStore`, `MemoryBatchStore`, `RedisBatchStore`, `create_memory_store()`, and `create_redis_store()`. See [Polling and webhooks](/docs/guides/server), [Stores](/docs/guides/stores), and [Security](/docs/guides/security).
+
+## Helpers
+
+- `resolve_model()` parses a string model or returns an existing `ModelSpec`.
+- `provider_from_ref()` identifies the provider represented by a `BatchRef`.
+- `is_terminal_status()` tests whether a status is terminal.
+- `coerce_credentials()` validates a credential mapping.
+- `utc_datetime()` converts a Unix timestamp to an aware UTC `datetime`.
+
+## Errors
+
+`BatchworkError` is the package base error and covers request validation, provider HTTP failures, and provider results that are not ready. Narrower exported errors include:
+
+- `BatchTimeoutError`: `wait()` exceeded its timeout.
+- `BatchClosedError`: an operation used a closed client or job.
+- `UnsupportedProviderError`: unknown provider or unsupported modality.
+- `MissingDependencyError`: an optional integration is unavailable.
+- `MediaResolutionError`: remote or inline media could not be resolved safely.
+- `BatchStateError`: exported for invalid batch-state operations.
+
+Negative `wait()` timing arguments raise the standard `ValueError`, not a `BatchworkError` subclass.

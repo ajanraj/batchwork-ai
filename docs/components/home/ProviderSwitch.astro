@@ -1,0 +1,50 @@
+---
+const providers = [
+  {
+    icon: "/logos/openai.svg",
+    model: "openai/gpt-5.6-sol",
+    name: "OpenAI",
+  },
+  {
+    icon: "/logos/anthropic.svg",
+    model: "anthropic/claude-sonnet-4-6",
+    name: "Anthropic",
+  },
+];
+
+const codeLines = (model: string) => [
+  { text: "job = await client.batch(" },
+  { highlight: true, text: `    model="${model}",` },
+  { text: "    requests=requests," },
+  { text: ")" },
+  { text: "" },
+  { text: "await job.wait()" },
+  { text: "" },
+  { text: "async for result in job.results():" },
+  { text: "    print(result.custom_id, result.text)" },
+];
+---
+
+<section class="home-section provider-switch reveal" aria-labelledby="provider-switch-title">
+  <div class="home-shell">
+    <div class="section-heading section-heading--center">
+      <p class="section-kicker">Switch providers</p>
+      <h2 id="provider-switch-title">Change the model. Keep everything else.</h2>
+      <p>The same requests, job lifecycle, and result handling work across provider batch APIs.</p>
+    </div>
+
+    <div class="provider-switch__comparison">
+      {providers.map((provider) => (
+        <article class="provider-switch__panel">
+          <header class="provider-switch__header">
+            <img src={provider.icon} alt="" width="34" height="34" loading="lazy" />
+            <h3>{provider.name}</h3>
+          </header>
+          <pre aria-label={`${provider.name} batch example`}><code>{codeLines(provider.model).map((line) => (
+            <span class:list={["provider-switch__line", line.highlight && "provider-switch__line--changed"]}>{line.text || " "}</span>
+          ))}</code></pre>
+        </article>
+      ))}
+    </div>
+  </div>
+</section>

@@ -1,0 +1,87 @@
+---
+title: Mistral
+description: Mistral file-backed text and embedding batch jobs.
+---
+
+Mistral uses file-backed Batch Jobs for chat and embeddings. Its JSONL and create payload differ from OpenAI: each line contains only `custom_id` and `body`, while the endpoint and model are supplied when the job is created.
+
+## At a glance
+
+| Property          | Batchwork behavior                       |
+| ----------------- | ---------------------------------------- |
+| Output modalities | Text and embeddings                      |
+| Text inputs       | Messages, tools, images, and PDFs        |
+| Endpoints         | `/v1/chat/completions`, `/v1/embeddings` |
+| Submission        | JSONL upload, then `/batch/jobs`         |
+| Results           | Output and error JSONL files             |
+| Batch metadata    | Forwarded                                |
+| Webhooks          | Managed polling only                     |
+| Credential        | `MISTRAL_API_KEY`                        |
+| Default base URL  | `https://api.mistral.ai/v1`              |
+
+## Text example
+
+```python
+from batchwork import BatchRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch(
+        model="mistral/mistral-large-latest",
+        requests=[BatchRequest(custom_id="summary", prompt="Summarize this report.")],
+    )
+```
+
+## Embeddings
+
+```python
+from batchwork import BatchEmbeddingRequest
+
+job = await client.batch_embeddings(
+    model="mistral/mistral-embed",
+    requests=[BatchEmbeddingRequest(custom_id="doc-1", value="Document text")],
+)
+```
+
+Mistral embedding provider options are currently ignored.
+
+## Lifecycle
+
+1. Each JSONL line contains `{custom_id, body}`; `model` and `stream` are removed from the body.
+2. Batchwork uploads the JSONL file.
+3. `/batch/jobs` receives the file ID, endpoint, model, and optional batch metadata.
+4. `poll()` retrieves `/batch/jobs/{id}`.
+5. `results()` streams the output file and then the error file when present.
+6. `cancel()` calls `/batch/jobs/{id}/cancel`.
+
+Mistral-specific uppercase states, including timeout and cancellation-requested states, map to normalized `BatchStatus` values.
+
+## Request translation
+
+| Input | Mistral behavior |
+| --- | --- |
+| `seed` | Renamed to `random_seed` |
+| Frequency/presence penalties | Ignored |
+| Assistant reasoning | Folded into assistant text |
+| Final assistant message | Receives `prefix=True` |
+| Named tool choice | Filters tools to the named function and sends `tool_choice="any"` |
+| Required tool choice | Becomes `"any"` |
+
+Mistral provider options include safe prompt, reasoning effort, document image/page limits, and parallel tool calls.
+
+## Media
+
+Mistral text requests support images and PDFs. HTTPS PDF URLs can pass directly. Image URLs and other resolvable image sources are downloaded and inlined. Other file media types are rejected.
+
+## Results
+
+Mistral output and error files use OpenAI-shaped result normalization for text, embeddings, usage, and item errors. Provider-specific fields remain in `result.response`.
+
+Mistral does not support image-generation output through Batchwork.
+
+## Official references
+
+- [Mistral Batch Inference](https://docs.mistral.ai/capabilities/batch/)
+- [Mistral embeddings](https://docs.mistral.ai/capabilities/embeddings/)
+- [Mistral vision](https://docs.mistral.ai/capabilities/vision/)
+
+See [Embeddings](/docs/modalities/embeddings), [Results](/docs/guides/results), and [Provider overview](/docs/providers).

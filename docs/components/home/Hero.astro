@@ -1,0 +1,66 @@
+---
+import { providers } from "../../lib/providers";
+import CodePanel from "./CodePanel.astro";
+import InstallCommand from "./InstallCommand.astro";
+
+const quickstart = `import asyncio
+
+from batchwork import BatchRequest, Batchwork
+
+
+async def main() -> None:
+    requests = [
+        BatchRequest(custom_id="doc-1", prompt="Summarize the first document"),
+        BatchRequest(custom_id="doc-2", prompt="Summarize the second document"),
+    ]
+
+    async with Batchwork() as client:
+        job = await client.batch(
+            model="openai/gpt-5.6-sol",
+            requests=requests,
+        )
+        await job.wait(timeout=3600)
+
+        async for result in job.results():
+            print(result.custom_id, result.status, result.text)
+
+
+asyncio.run(main())`;
+---
+
+<section class="hero">
+  <div class="home-shell hero__inner">
+    <p class="hero__eyebrow fade-up">Batch APIs for Python</p>
+    <h1 class="fade-up hero__title" style="--delay: 80ms">
+      Save up to 50% on <span>AI batch requests.</span>
+    </h1>
+    <p class="fade-up hero__lede" style="--delay: 150ms">
+      Use OpenAI, Anthropic, Gemini, Groq, Mistral, Together AI, and xAI through the same async Python API. Batchwork handles uploads, polling, and result parsing.
+    </p>
+
+    <div class="fade-up provider-orbit" style="--delay: 220ms" aria-label="Supported providers">
+      {providers.map((provider, index) => (
+        <a href={provider.route} class="provider-mark" style={`--mark-index:${index}`} title={provider.name}>
+          <img src={provider.icon} alt={provider.name} width="54" height="54" loading="eager" />
+        </a>
+      ))}
+    </div>
+
+    <div class="fade-up hero__actions" style="--delay: 290ms">
+      <a class="button button--primary" href="/docs/installation">Get started <span aria-hidden="true">→</span></a>
+      <a class="button button--quiet" href="/docs">Read the docs</a>
+    </div>
+
+    <div class="fade-up install-row" style="--delay: 350ms">
+      <InstallCommand command="uv add batchwork" label="uv install" />
+      <InstallCommand command="pip install batchwork" label="pip install" />
+    </div>
+
+    <div class="fade-up hero__example" style="--delay: 430ms">
+      <CodePanel code={quickstart} title="quickstart.py" />
+    </div>
+    <p class="hero__pricing-note">
+      Providers set batch pricing and model eligibility. Check current pricing before submitting.
+    </p>
+  </div>
+</section>

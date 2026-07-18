@@ -1,0 +1,14 @@
+---
+import CodeBlock from "blume/components/content/CodeBlock.astro";
+
+interface Props {
+  code: string;
+  title: string;
+}
+
+const { code, title } = Astro.props;
+---
+
+<div class="min-w-0 max-w-full text-left">
+  <CodeBlock code={code} lang="python" title={title} />
+</div>

@@ -1,0 +1,136 @@
+---
+title: Examples
+description: Submit requests, use messages and tools, resume jobs, and run live checks.
+---
+
+## Text batch
+
+```python
+from batchwork import BatchRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch(
+        model="openai/gpt-5.6-sol",
+        requests=[
+            BatchRequest(custom_id="summary-1", prompt="Summarize this document."),
+            BatchRequest(custom_id="summary-2", prompt="Explain the result briefly."),
+        ],
+    )
+    snapshot = await job.wait(poll_interval=15, timeout=3600)
+    results = await job.collect()
+```
+
+Provider output order is not stable. Join `results` to your inputs with `custom_id`.
+
+## Classification evaluation
+
+The [classification guide](/docs/guides/classification) runs a reproducible, balanced 300-comment spam evaluation with `gpt-5.4-nano` through OpenAI's Responses Batch API. It covers public CSV ingestion, deterministic sampling, progress snapshots, result correlation, accuracy metrics, token usage, and cost.
+
+## Embedding batch
+
+```python
+from batchwork import BatchEmbeddingRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch_embeddings(
+        model="openai/text-embedding-3-small",
+        requests=[
+            BatchEmbeddingRequest(custom_id="doc-1", value="First document"),
+            BatchEmbeddingRequest(custom_id="doc-2", value="Second document"),
+        ],
+    )
+    await job.wait()
+    vectors = {result.custom_id: result.embedding for result in await job.collect()}
+```
+
+## Messages, tools, and media
+
+```python
+from batchwork import (
+    BatchRequest,
+    Batchwork,
+    FunctionTool,
+    ImagePart,
+    SystemMessage,
+    TextPart,
+    UserMessage,
+)
+
+request = BatchRequest(
+    custom_id="inspect-chart",
+    messages=[
+        SystemMessage(content="Answer from the supplied chart."),
+        UserMessage(
+            content=[
+                TextPart(text="Which region grew fastest?"),
+                ImagePart(
+                    image="https://example.com/chart.png",
+                    media_type="image/png",
+                ),
+            ]
+        ),
+    ],
+    tools=[
+        FunctionTool(
+            name="lookup_metric",
+            description="Look up a metric by region.",
+            input_schema={
+                "type": "object",
+                "properties": {"region": {"type": "string"}},
+                "required": ["region"],
+            },
+        )
+    ],
+)
+
+async with Batchwork() as client:
+    job = await client.batch(model="anthropic/claude-sonnet-4-6", requests=[request])
+```
+
+Tool and media support varies by provider and model. Batchwork downloads media when a provider cannot safely consume its URL directly. Review the [provider matrix](/docs/configuration#supported-providers), provider-specific pages, and [remote-media security boundary](/docs/guides/security#remote-media).
+
+## Resume an existing batch
+
+```python
+from batchwork import BatchProvider, BatchRef, Batchwork
+
+ref = BatchRef(id="batch_123", provider=BatchProvider.OPENAI)
+
+async with Batchwork() as client:
+    job = await client.get_batch(ref)
+    await job.wait()
+    results = await job.collect()
+```
+
+Credentials follow the same precedence for submissions and resumed jobs. See [Configuration](/docs/configuration#credential-precedence).
+
+## Live provider acceptance tests
+
+Live tests create real provider batches, perform network requests, and may incur provider charges. Enable only the flows you intend to exercise:
+
+```bash
+BATCHWORK_RUN_LIVE=1 uv run pytest -m live tests/live
+```
+
+Set the normal provider API-key variable and a model variable using:
+
+```text
+BATCHWORK_LIVE_<PROVIDER>_<MODALITY>_MODEL
+```
+
+Examples:
+
+```text
+BATCHWORK_LIVE_OPENAI_TEXT_MODEL=gpt-5.6-sol
+BATCHWORK_LIVE_OPENAI_EMBEDDINGS_MODEL=text-embedding-3-small
+BATCHWORK_LIVE_OPENAI_IMAGES_MODEL=gpt-image-2
+BATCHWORK_LIVE_GOOGLE_IMAGES_MODEL=gemini-3-pro-image-preview
+BATCHWORK_LIVE_XAI_IMAGES_MODEL=grok-imagine-image
+```
+
+A model may be a bare provider model ID or full `provider/model` value. Missing model variables skip only their corresponding flow. Optional timing overrides:
+
+```text
+BATCHWORK_LIVE_POLL_SECONDS=15
+BATCHWORK_LIVE_TIMEOUT_SECONDS=1800
+```

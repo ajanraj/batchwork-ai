@@ -1,0 +1,107 @@
+---
+title: Google Gemini
+description: Gemini inline batch operations for text, embeddings, and generated images.
+---
+
+Google Gemini uses inline long-running operations. Text and image requests use `:batchGenerateContent`; embeddings use `:asyncBatchEmbedContent`. Batchwork polls the operation and reads inline results.
+
+## At a glance
+
+| Property | Batchwork behavior |
+| --- | --- |
+| Output modalities | Text, embeddings, image generation |
+| Text inputs | Messages, tools, inline media, Gemini Files URLs, supported YouTube URLs |
+| Submission | Inline long-running operation |
+| Results | Inline operation response only |
+| Batch metadata | Ignored |
+| Webhooks | Managed polling only |
+| Credentials | `GOOGLE_GENERATIVE_AI_API_KEY`, then `GEMINI_API_KEY` |
+| Default base URL | `https://generativelanguage.googleapis.com/v1beta` |
+
+## Text example
+
+```python
+from batchwork import BatchRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch(
+        model="google/gemini-2.5-flash",
+        requests=[BatchRequest(custom_id="summary", prompt="Summarize this report.")],
+    )
+```
+
+`gemini/model` is accepted as an alias for `google/model`.
+
+## Embeddings
+
+```python
+from batchwork import BatchEmbeddingRequest
+
+job = await client.batch_embeddings(
+    model="google/gemini-embedding-001",
+    requests=[
+        BatchEmbeddingRequest(
+            custom_id="doc-1",
+            value="Document text",
+            provider_options={
+                "google": {"outputDimensionality": 256, "taskType": "RETRIEVAL_DOCUMENT"}
+            },
+        )
+    ],
+)
+```
+
+Batchwork moves output dimensionality, task type, and title into Google’s `embedContentConfig` for the batch.
+
+## Image generation
+
+```python
+from batchwork import BatchImageRequest
+
+job = await client.batch_images(
+    model="google/gemini-3-pro-image-preview",
+    requests=[
+        BatchImageRequest(
+            custom_id="forest",
+            prompt="A sunlit forest path.",
+            aspect_ratio="16:9",
+            seed=42,
+        )
+    ],
+)
+```
+
+Google requires exactly one generated image per request. `aspect_ratio` and `seed` are serialized; generic `size` is not.
+
+## Lifecycle
+
+1. Each request is wrapped as `{metadata: {key: custom_id}, request: ...}`.
+2. Text/images call `models/{model}:batchGenerateContent`; embeddings call `models/{model}:asyncBatchEmbedContent`.
+3. The returned `batches/{id}` operation is polled.
+4. Inline responses are correlated through their metadata key.
+5. Cancellation uses `batches/{id}:cancel`.
+
+The effective inline upload maximum is the lower of the configured Batchwork limit and 20 MiB.
+
+## Translation and options
+
+Google generation settings are nested under `generationConfig`. Provider options include response modalities, thinking configuration, media resolution, image configuration, safety settings, cached content, labels, service tier, retrieval configuration, Google Search, and other native tools.
+
+Gemma models receive system text prepended to the first user message rather than `systemInstruction`. Gemini 3 has distinct mixed-tool and thought-signature behavior.
+
+## Media and result limits
+
+Only HTTPS Gemini Files URLs under the configured provider origin and supported YouTube URLs pass directly. Other remote media is downloaded and inlined through the configured media resolver.
+
+:::warning Batchwork supports inline result destinations only. If Google returns file-mode result fields, Batchwork raises `BatchworkError` instead of silently dropping output. :::
+
+Results normalize first-candidate text, embedding values, inline image data, usage, and structured errors. Google provider timestamps are not normalized into snapshots. Imagen `:predict` models are outside Batchwork’s batch image scope.
+
+## Official references
+
+- [Gemini Batch API](https://ai.google.dev/gemini-api/docs/batch-api)
+- [Gemini embeddings](https://ai.google.dev/gemini-api/docs/embeddings)
+- [Gemini image generation](https://ai.google.dev/gemini-api/docs/image-generation)
+- [Gemini Files API](https://ai.google.dev/gemini-api/docs/files)
+
+See [Embeddings](/docs/modalities/embeddings), [Image generation](/docs/modalities/images), and [Security](/docs/guides/security).

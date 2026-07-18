@@ -1,0 +1,68 @@
+---
+title: FAQ
+description: Pricing, timing, failures, media, providers, resumability, and production operation.
+---
+
+## Does Batchwork make requests cheaper?
+
+Batchwork uses provider-native batch APIs. Providers commonly price eligible batch requests up to 50% below standard synchronous requests, but Batchwork does not set or guarantee pricing. Check the selected provider, endpoint, model, and current pricing page.
+
+## How long does a batch take?
+
+Provider processing is asynchronous. Batches often take minutes and may take up to 24 hours depending on the provider, model, queue, and workload. Submission returns a `BatchJob` immediately.
+
+## Are results returned in request order?
+
+No. Correlate every result through `custom_id`. When omitted, Batchwork assigns `request-{index}` before submission.
+
+## Can some items fail while the batch completes?
+
+Yes. A completed provider batch can contain succeeded, errored, expired, and canceled items. Process `result.status` for each record.
+
+## Does `results()` stream model tokens?
+
+No. It streams completed result records from provider files, inline responses, or paginated endpoints. Provider token streaming is disabled for asynchronous batch requests.
+
+## Can a job be resumed after a restart?
+
+Yes. Persist the provider batch ID and provider, construct `BatchRef`, then call `get_batch()`. The resumed process must supply provider credentials.
+
+## Do I need provider SDKs?
+
+No. Batchwork uses HTTPX and Pydantic directly. The optional Redis store requires the `batchwork[redis]` extra.
+
+## Which providers support embeddings and image generation?
+
+Embeddings: OpenAI, Google Gemini, and Mistral. Image generation: OpenAI, Google Gemini, and xAI. All seven providers support text output.
+
+## Does “Images: No” mean a provider cannot read images?
+
+No. Output modality and input media are separate. OpenAI, Anthropic, Google, Groq, Mistral, Together AI, and xAI have different text-request image-input paths even when image generation is unsupported.
+
+## What are `provider_options`?
+
+They expose provider-specific request fields without weakening the shared request model. Keys generally use SDK-style camelCase and are nested under the provider name. Applicability depends on provider, endpoint, and model.
+
+## Are all generic request fields sent to every provider?
+
+No. Batchwork deliberately renames, nests, constrains, or removes fields according to provider behavior. Provider pages list important translations and ignored fields.
+
+## Are remote URLs always downloaded and validated by Batchwork?
+
+No. URLs that Batchwork fetches pass through `DefaultMediaResolver` protections. Some provider-supported URLs are passed directly to the provider and are fetched under the provider’s policy; Batchwork does not DNS-check, size-check, or inspect those resources.
+
+## Can I use a gateway or custom base URL?
+
+Yes. Set the provider base-URL environment variable or pass `base_url`/`ProviderCredentials`. Custom endpoints and headers are trusted application configuration. Anthropic additionally requires its provider-returned results URL to match the configured API origin.
+
+## Should a web request call `job.wait()`?
+
+Usually not. In-process waiting is suitable for scripts and workers. Services should persist a tracking target and run `BatchPoller.tick()` from a scheduler, or accept OpenAI native webhooks, then deliver a signed completion event.
+
+## Is webhook delivery exactly once?
+
+No. Portable delivery is at least once. Use stable event identity and a replay/idempotency store to deduplicate processing. Each delivery attempt receives a distinct replay-safe delivery ID.
+
+## Why are results unavailable after a completed-looking status?
+
+Provider state and result artifacts can become visible at slightly different times. Batchwork raises a concrete error instead of returning partial or silently missing output. Poll again after a short delay when the provider has not exposed results yet.

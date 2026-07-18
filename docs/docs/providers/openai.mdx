@@ -1,0 +1,126 @@
+---
+title: OpenAI
+description: OpenAI Batch API support for text, embeddings, and generated images.
+---
+
+OpenAI uses a file-backed Batch API: Batchwork serializes JSONL, uploads it through Files, creates a batch, polls status, then streams the output and error files.
+
+## At a glance
+
+| Property | Batchwork behavior |
+| --- | --- |
+| Output modalities | Text, embeddings, and image generation |
+| Text inputs | Messages, tools, images, supported file/audio forms; PDFs with Responses |
+| Endpoints | Chat Completions, Responses, legacy Completions, Embeddings, Image Generations |
+| Submission | JSONL file upload, then `/batches` |
+| Results | Output and error JSONL files |
+| Batch metadata | Forwarded |
+| Webhooks | Native OpenAI batch events plus managed polling |
+| Credential | `OPENAI_API_KEY` |
+| Default base URL | `https://api.openai.com/v1` |
+
+## Text example
+
+```python
+from batchwork import BatchRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch(
+        model="openai/gpt-5.6-sol",
+        requests=[
+            BatchRequest(custom_id="fr", prompt="Capital of France? One word."),
+            BatchRequest(custom_id="jp", prompt="Capital of Japan? One word."),
+        ],
+    )
+```
+
+String OpenAI models default to Chat Completions. Select Responses or legacy Completions explicitly:
+
+```python
+from batchwork import BatchProvider, ModelKind, ModelSpec
+
+responses_model = ModelSpec(
+    provider=BatchProvider.OPENAI,
+    model_id="gpt-5.6-sol",
+    kind=ModelKind.RESPONSES,
+)
+```
+
+## Embeddings
+
+```python
+from batchwork import BatchEmbeddingRequest
+
+job = await client.batch_embeddings(
+    model="openai/text-embedding-3-small",
+    requests=[BatchEmbeddingRequest(custom_id="doc-1", value="Document text")],
+)
+```
+
+Use `provider_options={"openai": {"dimensions": 256}}` to request a supported reduced dimension.
+
+## Image generation
+
+```python
+from batchwork import BatchImageRequest
+
+job = await client.batch_images(
+    model="openai/gpt-image-2",
+    requests=[
+        BatchImageRequest(
+            custom_id="bike",
+            prompt="A red bicycle leaning against a brick wall.",
+            n=2,
+            size="1536x1024",
+            provider_options={
+                "openai": {"outputFormat": "webp", "quality": "high"}
+            },
+        )
+    ],
+)
+```
+
+Each item targets `/v1/images/generations`. `n` and `size` are supported. OpenAI image provider options include `quality`, `style`, `background`, `moderation`, `outputFormat`, `outputCompression`, and `user`. Generated image bytes are normalized into `result.images[].data`; usage is normalized when the provider returns it. Image editing is not exposed by `batch_images()`.
+
+## Lifecycle
+
+1. Each request becomes `{custom_id, method: "POST", url, body}` in JSONL.
+2. Batchwork uploads the file to `/files` with purpose `batch`.
+3. `/batches` receives the file ID, endpoint, `completion_window="24h"`, and optional metadata.
+4. `poll()` retrieves `/batches/{id}`.
+5. `results()` streams both `output_file_id` and `error_file_id` when present.
+6. `cancel()` calls `/batches/{id}/cancel`.
+
+Provider-returned IDs are validated before being used in paths.
+
+## Request translation
+
+| Input | Wire behavior |
+| --- | --- |
+| `stream` | Removed for batch submission |
+| Chat reasoning-model token limit | May become `max_completion_tokens` |
+| Responses token limit | Becomes `max_output_tokens` |
+| Unsupported reasoning sampling/penalties | Removed according to model behavior |
+| System messages | May become developer messages or be omitted through OpenAI options |
+| Service tier | Removed for known unsupported model/tier combinations |
+
+OpenAI provider options cover endpoint-specific fields such as reasoning effort/summary, storage, response includes, previous response IDs, tool controls, service tier, log probabilities, caching, user identifiers, and embedding dimensions.
+
+## Media and output
+
+Image URLs can pass directly to supported OpenAI text models. PDF URLs pass directly only for Responses; other media forms are resolved before serialization. Generated-image requests use `batch_images()` instead of `batch()`.
+
+## Results and errors
+
+Batchwork normalizes Chat, Completion, and Responses text, embedding vectors, generated images, usage, and item errors. Tool calls, finish reasons, citations, reasoning, and other provider fields remain in `result.response`.
+
+OpenAI is the only provider with `BatchPoller.handle_openai_webhook()`. It verifies signed `batch.*` events, retrieves authoritative state, and enters the same completion path used by managed polling.
+
+## Official references
+
+- [OpenAI Batch API](https://developers.openai.com/api/docs/guides/batch)
+- [OpenAI image generation](https://developers.openai.com/api/docs/guides/image-generation)
+- [OpenAI webhooks](https://developers.openai.com/api/docs/guides/webhooks)
+- [OpenAI pricing](https://openai.com/api/pricing/)
+
+See [Jobs](/docs/guides/jobs), [Results](/docs/guides/results), and [Polling and webhooks](/docs/guides/server).

@@ -1,0 +1,108 @@
+---
+title: Image generation
+description: Generate image batches through OpenAI, Google Gemini, and xAI.
+---
+
+Image-output batches are supported through OpenAI, Google Gemini, and xAI. Images supplied to a text request are input media and use `batch()`, not `batch_images()`.
+
+## OpenAI
+
+```python
+from batchwork import BatchImageRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch_images(
+        model="openai/gpt-image-2",
+        requests=[
+            BatchImageRequest(
+                custom_id="bike",
+                prompt="A red bicycle leaning against a brick wall.",
+                n=2,
+                size="1536x1024",
+                provider_options={
+                    "openai": {"outputFormat": "webp", "quality": "high"}
+                },
+            )
+        ],
+    )
+    await job.wait(timeout=3600)
+    images = (await job.collect())[0].images
+```
+
+OpenAI image batches target `/v1/images/generations` and normalize inline base64 results. `n` and `size` are supported. Provider options include `quality`, `style`, `background`, `moderation`, `outputFormat`, `outputCompression`, and `user`. Generic `aspect_ratio` and `seed` are not serialized. Image editing is outside `batch_images()`.
+
+## Google Gemini
+
+```python
+from batchwork import BatchImageRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch_images(
+        model="google/gemini-3-pro-image-preview",
+        requests=[
+            BatchImageRequest(
+                custom_id="forest",
+                prompt="A sunlit forest path in watercolor.",
+                aspect_ratio="16:9",
+                seed=42,
+            )
+        ],
+    )
+    await job.wait(timeout=3600)
+    images = (await job.collect())[0].images
+```
+
+Google image batches use the inline `:batchGenerateContent` operation and return images from inline response parts.
+
+- Exactly one image per request is supported (`n=1`).
+- `aspect_ratio` and `seed` are serialized.
+- Generic `size` is not serialized.
+- Imagen `:predict` models are outside Batchwork’s batch image scope.
+- File-mode batch results are not supported; Batchwork raises instead of silently dropping them.
+
+## xAI
+
+```python
+async with Batchwork() as client:
+    job = await client.batch_images(
+        model="xai/grok-imagine-image",
+        requests=[
+            BatchImageRequest(
+                custom_id="city",
+                prompt="A quiet futuristic city at dawn.",
+                n=2,
+                aspect_ratio="16:9",
+            )
+        ],
+    )
+    await job.wait(timeout=3600)
+
+    async for result in job.results():
+        for image in result.images or []:
+            if image.data is not None:
+                await save_base64(image.data, image.media_type)
+            elif image.url is not None:
+                await download_promptly(image.url)
+```
+
+xAI requests force a base64-oriented response format, but normalization accepts image `data`, a `url`, or both. Provider-returned URLs may be signed and short-lived.
+
+- `n` and generic `aspect_ratio` are supported.
+- Generic `size` and `seed` are not serialized.
+- xAI provider options include output format, sync mode, resolution, quality, user, and provider-level aspect ratio.
+
+## Result shape
+
+Each successful `BatchResult` may expose:
+
+```python
+result.images  # list[BatchImage] | None
+```
+
+A `BatchImage` contains `data`, `url`, or both plus an optional `media_type`. Provider-specific response details remain available in `result.response`.
+
+## Unsupported providers
+
+Anthropic, Groq, Mistral, and Together AI image-output submissions fail locally.
+
+See [Provider overview](/docs/providers) and [Results](/docs/guides/results).

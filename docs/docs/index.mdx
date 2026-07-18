@@ -1,0 +1,48 @@
+---
+title: Batchwork for Python
+description: One typed async workflow for provider-native AI batch jobs.
+---
+
+Batchwork submits large text, embedding, and image workloads to seven provider-native batch APIs, then exposes one normalized job and result lifecycle.
+
+```python
+from batchwork import BatchRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch(
+        model="openai/gpt-5.6-sol",
+        requests=[BatchRequest(custom_id="hello", prompt="Say hello")],
+    )
+    await job.wait(timeout=3600)
+
+    async for result in job.results():
+        print(result.custom_id, result.status, result.text)
+```
+
+## Start here
+
+- [Installation](/docs/installation): install with uv or pip and configure the first credential.
+- [Configuration](/docs/configuration): model syntax, credentials, limits, and shared matrices.
+- [Jobs](/docs/guides/jobs): submit, poll, wait, cancel, and resume.
+- [Results](/docs/guides/results): stream records, correlate IDs, and handle partial failures.
+- [Examples](/docs/examples): complete text, embedding, media, and resume flows.
+
+## Workloads
+
+- [Text and messages](/docs/modalities/text)
+- [Embeddings](/docs/modalities/embeddings)
+- [Image generation](/docs/modalities/images)
+- [Provider overview](/docs/providers)
+
+## Production
+
+- [Polling and webhooks](/docs/guides/server)
+- [Stores](/docs/guides/stores)
+- [Security](/docs/guides/security)
+
+## Reference
+
+- [Public API](/docs/api)
+- [FAQ](/docs/faq)
+
+Provider processing is asynchronous and can take minutes or up to 24 hours. Output order is not stable; correlate through `custom_id`. Provider-owned pricing, limits, and model eligibility can change independently of Batchwork.

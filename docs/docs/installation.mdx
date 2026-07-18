@@ -1,0 +1,30 @@
+---
+title: Installation
+description: Install Batchwork and prepare provider access.
+---
+
+With uv:
+
+```bash
+uv add batchwork
+```
+
+With pip:
+
+```bash
+pip install batchwork
+```
+
+Batchwork requires Python 3.11 or newer. The base install contains HTTPX and Pydantic; provider SDKs are not runtime dependencies.
+
+Add the optional Upstash Redis store only when needed:
+
+```bash
+uv add "batchwork[redis]"
+# or
+pip install "batchwork[redis]"
+```
+
+Continue with [Configuration](/docs/configuration) for model syntax, provider credentials, endpoint overrides, supported modalities, and batch limits. Credentials may be configured once on `Batchwork`, supplied per call, or read from environment variables.
+
+Submitting a batch performs network requests and creates a real provider job. Provider usage and storage charges may apply.

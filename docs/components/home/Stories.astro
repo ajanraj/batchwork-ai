@@ -1,0 +1,103 @@
+---
+import CodePanel from "./CodePanel.astro";
+
+const stories = [
+  {
+    eyebrow: "Submit",
+    title: "Submit a batch with normal Python objects.",
+    description: "Choose a provider and model, pass your requests, and get a BatchJob back as soon as the provider accepts the batch.",
+    href: "/docs/guides/jobs",
+    file: "submit.py",
+    code: `from batchwork import BatchRequest, Batchwork
+
+requests = [
+    BatchRequest(
+        custom_id=document.id,
+        prompt=f"Summarize:\\n{document.text}",
+        max_output_tokens=400,
+    )
+    for document in documents
+]
+
+async with Batchwork() as client:
+    job = await client.batch(
+        model="anthropic/claude-sonnet-4-5",
+        requests=requests,
+    )
+
+print(job.id, job.provider, job.status)`,
+  },
+  {
+    eyebrow: "Results",
+    title: "Process every result by custom_id.",
+    description: "Provider output may be unordered and can contain both successes and failures. Batchwork gives every item the same status and result shape.",
+    href: "/docs/guides/results",
+    file: "results.py",
+    code: `await job.wait(timeout=3600)
+
+async for result in job.results():
+    match result.status:
+        case "succeeded":
+            await save_summary(
+                result.custom_id,
+                result.text,
+                result.usage,
+            )
+        case "errored":
+            await queue_retry(
+                result.custom_id,
+                result.error,
+            )
+        case "expired" | "canceled":
+            await mark_unfinished(result.custom_id)`,
+  },
+  {
+    eyebrow: "Production",
+    title: "Poll jobs outside your request handler.",
+    description: "Store tracked jobs, run the poller from a worker or cron, and send a signed webhook when a batch finishes. OpenAI's native webhooks use the same completion path.",
+    href: "/docs/guides/server",
+    file: "worker.py",
+    code: `from batchwork import (
+    BatchPoller,
+    ProviderCredentials,
+    TrackTarget,
+    create_memory_store,
+)
+
+poller = BatchPoller(
+    create_memory_store(),
+    credentials=ProviderCredentials(api_key="..."),
+)
+
+target = TrackTarget(
+    id=job.id,
+    provider=job.provider,
+    status=job.status,
+)
+await poller.track(
+    target,
+    webhook_url="https://app.example/webhooks/batch",
+    secret=webhook_secret,
+)
+
+# Run from a worker or scheduled task.
+result = await poller.tick()`,
+  },
+];
+---
+
+<section class="home-section stories" aria-label="Batchwork workflow">
+  <div class="home-shell story-list">
+    {stories.map((story, index) => (
+      <article class:list={["story reveal", index % 2 === 1 && "story--reverse"]}>
+        <div class="story__copy">
+          <p class="section-kicker">{story.eyebrow}</p>
+          <h2>{story.title}</h2>
+          <p>{story.description}</p>
+          <a href={story.href}>Read the guide <span aria-hidden="true">→</span></a>
+        </div>
+        <CodePanel code={story.code} title={story.file} />
+      </article>
+    ))}
+  </div>
+</section>

@@ -1,0 +1,103 @@
+---
+title: Results
+description: Consume unordered provider output, partial failures, usage, and raw responses.
+---
+
+Batchwork normalizes provider result records without hiding provider-native data. Wait for the provider batch to finish, then stream records or collect them into memory.
+
+## Stream result records
+
+```python
+await job.wait(timeout=3600)
+
+async for result in job.results():
+    print(result.custom_id, result.status)
+```
+
+`results()` returns an async iterator. It streams completed result records from provider files, inline responses, or paginated endpoints; it is not token streaming and does not yield while the provider is still generating a request.
+
+The client-level equivalent is also an async iterator:
+
+```python
+async for result in client.get_batch_results(ref):
+    ...
+```
+
+Do not `await` the iterator itself.
+
+## Collect into memory
+
+```python
+results = await job.collect()
+by_id = {result.custom_id: result for result in results}
+```
+
+`collect()` buffers every result and is convenient for smaller batches. Prefer `results()` when outputs may be large.
+
+## Correlate by `custom_id`
+
+Provider output order is not guaranteed. Never zip result order with request order; join through `custom_id`.
+
+```python
+inputs = {request.custom_id: request for request in requests}
+
+async for result in job.results():
+    source = inputs[result.custom_id]
+```
+
+## Handle mixed outcomes
+
+A completed provider batch may contain successful and unsuccessful request items.
+
+```python
+async for result in job.results():
+    match result.status:
+        case "succeeded":
+            await save_output(result.custom_id, result.text)
+        case "errored":
+            await retry_later(result.custom_id, result.error)
+        case "expired" | "canceled":
+            await mark_unfinished(result.custom_id)
+```
+
+| Status | Meaning |
+| --- | --- |
+| `succeeded` | The item produced a provider response. |
+| `errored` | The provider returned an item-level error; `error` is populated. |
+| `expired` | The provider did not finish the item before expiry. |
+| `canceled` | The item was canceled. |
+
+## Normalized fields
+
+| Field | Contents |
+| --- | --- |
+| `custom_id` | Correlation identity from the request. |
+| `status` | Normalized item status. |
+| `text` | Text extracted from a supported provider response. |
+| `embedding` | One embedding vector. |
+| `images` | Generated `BatchImage` objects containing `data`, `url`, or both. |
+| `usage` | Normalized input, output, and total token counts when available. |
+| `error` | Structured message, code, and type for errored items. |
+| `response` | Provider-specific response data retained for fields Batchwork does not normalize. |
+
+Tool calls, finish reasons, citations, reasoning data, and other provider-specific content generally remain in `response`.
+
+## Result transport by provider
+
+| Provider    | Result delivery                              |
+| ----------- | -------------------------------------------- |
+| OpenAI      | Output and error JSONL files                 |
+| Anthropic   | JSONL stream from a same-origin provider URL |
+| Google      | Inline operation response only               |
+| Groq        | Output and error JSONL files                 |
+| Mistral     | Output and error JSONL files                 |
+| Together AI | Output and error JSONL files                 |
+| xAI         | Paginated results endpoint                   |
+
+Batchwork streams an error file after an output file when the provider exposes both. Calling results before they are available raises `BatchworkError` rather than returning an incomplete list.
+
+## HTTP and parsing failures
+
+Provider lifecycle HTTP errors identify the method, URL, and status without embedding the provider response body in the exception. Invalid JSON, non-object responses, malformed JSONL, and unsupported provider result modes raise concrete `BatchworkError` messages.
+
+See [Jobs](/docs/guides/jobs), [Text](/docs/modalities/text), [Embeddings](/docs/modalities/embeddings), and [Images](/docs/modalities/images).

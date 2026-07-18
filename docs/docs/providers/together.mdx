@@ -1,0 +1,80 @@
+---
+title: Together AI
+description: Together AI chat batches with secure presigned JSONL upload and preprocessing.
+---
+
+Together AI uses a specialized file-backed chat flow. Batchwork initiates an upload, sends JSONL to a validated presigned storage URL, preprocesses the file, then creates the batch.
+
+## At a glance
+
+| Property | Batchwork behavior |
+| --- | --- |
+| Output modalities | Text |
+| Text inputs | Messages, tools, images, inline PDF/text, inline WAV/MP3 |
+| Endpoint | `/v1/chat/completions` |
+| Submission | Upload initiation, presigned PUT, preprocessing, batch creation |
+| Results | Output and error JSONL files |
+| Batch metadata | Forwarded |
+| Webhooks | Managed polling only |
+| Credential | `TOGETHER_API_KEY` |
+| Default base URL | `https://api.together.xyz/v1` |
+
+## Example
+
+```python
+from batchwork import BatchRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch(
+        model="together/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        requests=[BatchRequest(custom_id="summary", prompt="Summarize this report.")],
+    )
+```
+
+`togetherai/model` is accepted as an alias for `together/model`.
+
+## Lifecycle
+
+1. Requests become body-only JSONL lines: `{custom_id, body}`.
+2. Batchwork initiates `/files` using multipart metadata with purpose `batch-api`, filename `batchwork.jsonl`, and type `jsonl`.
+3. Together returns a file ID and presigned storage URL.
+4. Batchwork performs a pinned HTTPS PUT containing the JSONL.
+5. `/files/{id}/preprocess` prepares the upload.
+6. `/batches` creates the chat batch with optional metadata.
+7. Output and error files are streamed and normalized.
+
+The JSONL bytes are not sent in the multipart initiation body.
+
+## Upload security
+
+The presigned URL must use HTTPS, contain no embedded credentials or control characters, and resolve entirely to globally routable addresses. Batchwork validates DNS, pins the connection to approved addresses while preserving Host/SNI, disables redirects, and does not forward provider credentials, injected auth, cookies, or unrelated client headers to the storage host.
+
+## Media
+
+Together chat serialization supports:
+
+- Image URLs and inline images
+- Inline PDF data
+- UTF-8 text-file data
+- Inline WAV and MP3 audio
+
+PDF and audio URLs are not emitted directly; remote sources are generally downloaded and converted to supported inline forms before Together serialization.
+
+## Provider options
+
+Known options rename user, reasoning effort, and text verbosity fields. `strictJsonSchema` is consumed by structured-output handling. Other Together provider-option keys are forwarded unchanged to the wire body, so treat them as trusted provider configuration.
+
+Assistant reasoning is serialized as `reasoning_content`.
+
+## Results and limitations
+
+Together uses output/error file normalization for text, usage, and item errors. Provider-specific fields remain in `result.response`.
+
+Batchwork does not expose Together embeddings or image-generation output. Audio described above is text-request input, not an audio-generation or transcription batch API.
+
+## Official references
+
+- [Together Batch Inference](https://docs.together.ai/docs/batch-inference)
+- [Together vision](https://docs.together.ai/docs/vision-overview)
+
+See [Text and messages](/docs/modalities/text), [Security](/docs/guides/security), and [Results](/docs/guides/results).

@@ -1,0 +1,29 @@
+---
+const features = [
+  ["Media inputs", "Use images, PDFs, text files, audio, and provider file references where the selected provider supports them."],
+  ["Three output types", "Run text batches on all seven providers, embeddings on three, and image generation on OpenAI, Google, and xAI."],
+  ["Persistent stores", "Track jobs in memory during development or use Redis-compatible storage in production."],
+  ["Signed webhooks", "Sign completion events, reject stale deliveries, and deduplicate retries by event ID."],
+  ["Provider options", "Pass provider-specific settings without changing the shared request and result models."],
+  ["No provider SDKs", "Batchwork talks to provider APIs directly with HTTPX."],
+];
+---
+
+<section class="home-section expansion reveal" aria-labelledby="expansion-title">
+  <div class="home-shell expansion__grid">
+    <div class="section-heading">
+      <p class="section-kicker">When you need more</p>
+      <h2 id="expansion-title">Add storage and webhooks without changing the batch API.</h2>
+      <p>Start with a script. Add persistence, media handling, scheduled polling, or signed delivery when the workload moves into production.</p>
+      <a class="text-link" href="/docs/api">Browse the public API <span aria-hidden="true">→</span></a>
+    </div>
+    <div class="feature-index">
+      {features.map(([title, description], index) => (
+        <article>
+          <span>{String(index + 1).padStart(2, "0")}</span>
+          <div><h3>{title}</h3><p>{description}</p></div>
+        </article>
+      ))}
+    </div>
+  </div>
+</section>

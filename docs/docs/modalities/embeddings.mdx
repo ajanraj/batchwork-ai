@@ -1,0 +1,83 @@
+---
+title: Embeddings
+description: Batch embedding values with OpenAI, Google Gemini, and Mistral.
+---
+
+Embeddings are supported through OpenAI, Google Gemini, and Mistral.
+
+## Submit embeddings
+
+```python
+from batchwork import BatchEmbeddingRequest, Batchwork
+
+requests = [
+    BatchEmbeddingRequest(custom_id="doc-1", value="First document"),
+    BatchEmbeddingRequest(custom_id="doc-2", value="Second document"),
+]
+
+async with Batchwork() as client:
+    job = await client.batch_embeddings(
+        model="openai/text-embedding-3-small",
+        requests=requests,
+    )
+    await job.wait(timeout=3600)
+    vectors = {
+        result.custom_id: result.embedding
+        for result in await job.collect()
+        if result.status == "succeeded"
+    }
+```
+
+Each request contains one `value`. Results expose the vector through `result.embedding`.
+
+## Provider coverage
+
+| Provider | Submission | Results | Notes |
+| --- | --- | --- | --- |
+| OpenAI | JSONL file through `/v1/embeddings` | Output/error JSONL files | Supports dimensions through OpenAI provider options. |
+| Google | Inline `:asyncBatchEmbedContent` operation | Inline response | Supports output dimensionality, task type, and title. |
+| Mistral | JSONL file and Batch Job | Output/error JSONL files | Embedding provider options are currently ignored. |
+
+Anthropic, Groq, Together AI, and xAI raise `UnsupportedProviderError` before network I/O.
+
+## OpenAI dimensions
+
+```python
+request = BatchEmbeddingRequest(
+    custom_id="doc-1",
+    value="Document text",
+    provider_options={"openai": {"dimensions": 256}},
+)
+```
+
+## Google embedding configuration
+
+```python
+request = BatchEmbeddingRequest(
+    custom_id="search-document",
+    value="Document text",
+    provider_options={
+        "google": {
+            "outputDimensionality": 256,
+            "taskType": "RETRIEVAL_DOCUMENT",
+            "title": "Document title",
+        }
+    },
+)
+```
+
+Batchwork moves these values into Google’s batch-level `embedContentConfig` where required.
+
+## Correlation and failures
+
+Output order is not stable. Join vectors through `custom_id` and handle item-level errors before storing embeddings.
+
+```python
+async for result in job.results():
+    if result.status == "succeeded" and result.embedding is not None:
+        await vector_store.put(result.custom_id, result.embedding)
+    elif result.status == "errored":
+        await record_failure(result.custom_id, result.error)
+```
+
+Model IDs in examples are illustrative. Select a current batch-compatible embedding model from the provider’s documentation.

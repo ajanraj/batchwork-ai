@@ -1,0 +1,132 @@
+---
+title: Configuration
+description: Models, credentials, providers, endpoints, and batch limits.
+---
+
+## Models
+
+String models use `provider/model` form. The provider is the segment before the first slash, so model IDs may contain additional slashes.
+
+```python
+job = await client.batch(
+    model="openai/gpt-5.6-sol",
+    requests=requests,
+)
+```
+
+`gemini` is an alias for `google`, and `togetherai` is an alias for `together`. String xAI models use the Responses request shape; other string models use the Chat request shape. Use `ModelSpec` when an endpoint kind must be explicit:
+
+```python
+from batchwork import BatchProvider, ModelKind, ModelSpec
+
+model = ModelSpec(
+    provider=BatchProvider.OPENAI,
+    model_id="gpt-5.6-sol",
+    kind=ModelKind.RESPONSES,
+)
+```
+
+`ModelKind` supports `CHAT`, `RESPONSES`, and `COMPLETION`.
+
+## Supported providers
+
+| Provider | Text | Embeddings | Image generation |
+| --- | --- | --- | --- |
+| [OpenAI](/docs/providers/openai) | Yes | Yes | Yes |
+| [Anthropic](/docs/providers/anthropic) | Yes | No | No |
+| [Google](/docs/providers/google) | Yes | Yes | Yes |
+| [Groq](/docs/providers/groq) | Yes | No | No |
+| [Mistral](/docs/providers/mistral) | Yes | Yes | No |
+| [Together AI](/docs/providers/together) | Yes | No | No |
+| [xAI](/docs/providers/xai) | Yes | No | Yes |
+
+Selecting an unsupported modality raises `UnsupportedProviderError` before a provider request is submitted. The table describes generated output. All seven providers accept image inputs for supported text models; see the [input-media matrix](/docs/providers#text-request-input-media).
+
+## Submission and results
+
+| Provider | Submission | Results | Batch `metadata` |
+| --- | --- | --- | --- |
+| OpenAI | JSONL file upload | Output/error JSONL files | Forwarded |
+| Anthropic | Inline Message Batch | Same-origin JSONL URL | Ignored |
+| Google | Inline operation | Inline response only | Ignored |
+| Groq | JSONL file upload | Output/error JSONL files | Forwarded |
+| Mistral | JSONL file upload | Output/error JSONL files | Forwarded |
+| Together AI | Presigned JSONL upload and preprocess | Output/error JSONL files | Forwarded |
+| xAI | JSONL file upload | Paginated results endpoint | Ignored |
+
+See the [provider overview](/docs/providers) for accepted input media and native versus managed webhook behavior.
+
+## Environment variables
+
+| Provider | API key | Base URL override |
+| --- | --- | --- |
+| Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` |
+| Google | `GOOGLE_GENERATIVE_AI_API_KEY` or `GEMINI_API_KEY` | `GOOGLE_GENERATIVE_AI_BASE_URL` |
+| Groq | `GROQ_API_KEY` | `GROQ_BASE_URL` |
+| Mistral | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` |
+| OpenAI | `OPENAI_API_KEY` | `OPENAI_BASE_URL` |
+| Together AI | `TOGETHER_API_KEY` | `TOGETHER_BASE_URL` |
+| xAI | `XAI_API_KEY` | `XAI_BASE_URL` |
+
+When both Google key variables are present, `GOOGLE_GENERATIVE_AI_API_KEY` takes precedence.
+
+## Credential precedence
+
+API keys and base URLs resolve in this order:
+
+1. Explicit per-call `api_key` or `base_url`.
+2. Per-call `credentials`.
+3. Credentials configured on `Batchwork`.
+4. Provider environment variables.
+
+Headers are merged instead of replaced: client credentials, then per-call credential headers, then explicit per-call `headers`.
+
+```python
+from batchwork import BatchProvider, Batchwork, ProviderCredentials
+
+credentials = {
+    BatchProvider.OPENAI: ProviderCredentials(
+        api_key="...",
+        base_url="https://gateway.example.com/v1",
+        headers={"X-Application": "batch-worker"},
+    )
+}
+
+async with Batchwork(credentials=credentials) as client:
+    job = await client.batch(
+        model="openai/gpt-5.6-sol",
+        requests=requests,
+        headers={"X-Request-Group": "nightly"},
+    )
+```
+
+Values may also be supplied to one call with `credentials=ProviderCredentials(...)`, `api_key=`, `base_url=`, and `headers=`. Custom endpoints and headers are trusted application configuration; review the [security boundaries](/docs/guides/security) before routing requests through a gateway.
+
+## Limits
+
+`BatchLimits` defaults to:
+
+| Limit                        | Default |
+| ---------------------------- | ------- |
+| Requests per batch           | 50,000  |
+| Serialized bytes per request | 20 MiB  |
+| Upload bytes per batch       | 200 MiB |
+
+```python
+from batchwork import BatchLimits
+
+limits = BatchLimits(
+    max_requests=10_000,
+    max_request_bytes=10 * 1024 * 1024,
+    max_upload_bytes=100 * 1024 * 1024,
+)
+```
+
+These are client-side safeguards. Providers may enforce lower limits. Notable restrictions:
+
+- Google inline batch uploads are capped at 20 MiB.
+- Google image batches generate exactly one image per request (`n=1`).
+- Google file-mode batch results are not supported; use inline results.
+- Imagen models are outside Batchwork's batch image scope.
+- OpenAI image batches support generation through `/v1/images/generations`; image editing is outside `batch_images()`.
+- xAI image result URLs are signed and short-lived; consume them promptly.

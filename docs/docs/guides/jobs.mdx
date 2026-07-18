@@ -1,0 +1,106 @@
+---
+title: Jobs
+description: Submit, poll, wait, cancel, and resume provider batch jobs.
+---
+
+A submission returns a `BatchJob` as soon as the provider accepts the batch. Provider processing continues asynchronously and may take minutes or, depending on the provider and workload, up to 24 hours.
+
+## Submit a job
+
+```python
+from batchwork import BatchRequest, Batchwork
+
+async with Batchwork() as client:
+    job = await client.batch(
+        model="openai/gpt-5.6-sol",
+        requests=[
+            BatchRequest(custom_id="document-1", prompt="Summarize this document."),
+            BatchRequest(custom_id="document-2", prompt="Extract three keywords."),
+        ],
+    )
+
+    print(job.id, job.provider, job.status)
+```
+
+`batch()`, `batch_embeddings()`, and `batch_images()` all return `BatchJob`. Unsupported provider/modality combinations fail before a network request.
+
+## Snapshot properties
+
+A job exposes the last known provider snapshot:
+
+- `id`
+- `provider`
+- `status`
+- `request_counts`
+- `created_at`
+- `completed_at`
+- `expires_at`
+- `raw`
+
+These properties are cached. Read them after submission or after an operation such as `poll()`, `wait()`, or `cancel()` refreshes the snapshot.
+
+## Poll once
+
+```python
+snapshot = await job.poll()
+print(snapshot.status, snapshot.request_counts)
+```
+
+`poll()` performs one provider retrieval and returns the fresh `BatchSnapshot`.
+
+## Wait for a terminal state
+
+```python
+snapshot = await job.wait(
+    poll_interval=15,
+    timeout=3600,
+)
+```
+
+`wait()` is awaitable. `poll_interval` defaults to 15 seconds. A negative interval or timeout raises `ValueError`; an elapsed timeout raises `BatchTimeoutError` without canceling the provider batch.
+
+Use `on_poll` to observe each refreshed snapshot:
+
+```python
+async def report(snapshot):
+    print(snapshot.status, snapshot.request_counts.completed)
+
+await job.wait(on_poll=report)
+```
+
+For scripts and workers, waiting in-process can be convenient. For services, use the [poller and webhook layer](/docs/guides/server) instead of holding an HTTP request open.
+
+## Cancel
+
+```python
+snapshot = await job.cancel()
+```
+
+Cancellation is provider best-effort. `cancel()` sends the provider cancellation request and then retrieves a fresh snapshot. A provider may report an intermediate cancelling state before cancellation becomes terminal.
+
+## Resume in another process
+
+Persist the provider batch identity, not the original request payload:
+
+```python
+from batchwork import BatchProvider, BatchRef, Batchwork
+
+ref = BatchRef(id="batch_123", provider=BatchProvider.OPENAI)
+
+async with Batchwork() as client:
+    job = await client.get_batch(ref)
+    await job.wait(timeout=3600)
+    results = await job.collect()
+```
+
+The new process still needs credentials for the referenced provider. Credential precedence is identical for new and resumed jobs; see [Configuration](/docs/configuration#credential-precedence).
+
+## Request identities
+
+`custom_id` correlates each input with its result because provider output order is not stable. When omitted, Batchwork assigns `request-{index}`. Duplicate IDs fail locally before submission.
+
+## Client ownership
+
+Jobs use the HTTP client owned by their `Batchwork` instance. Consume the job while that client remains open. An HTTPX client explicitly supplied to `Batchwork` remains caller-owned and is not closed by Batchwork.
+
+Next: [Results](/docs/guides/results), [Examples](/docs/examples), and [Polling and webhooks](/docs/guides/server).

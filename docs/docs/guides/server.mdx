@@ -1,0 +1,106 @@
+---
+title: Polling and webhooks
+description: Track provider jobs, poll from a scheduler, and deliver signed completion events.
+---
+
+`BatchPoller` moves long-running provider work out of an HTTP request. Track each batch once, run `tick()` from a worker or scheduler, and deliver a completion callback or signed webhook when the provider reaches a terminal state.
+
+## Create a poller
+
+```python
+from batchwork import BatchPoller, ProviderCredentials, create_memory_store
+
+poller = BatchPoller(
+    create_memory_store(),
+    credentials=ProviderCredentials(api_key="..."),
+)
+```
+
+Use `create_redis_store()` for durable tracking; see [Stores](/docs/guides/stores). A credential resolver can return provider-specific credentials when one poller tracks multiple providers.
+
+## Track a submitted job
+
+`track()` accepts a `TrackTarget`, not the `BatchJob` itself:
+
+```python
+from batchwork import TrackTarget
+
+target = TrackTarget(
+    id=job.id,
+    provider=job.provider,
+    status=job.status,
+)
+
+await poller.track(
+    target,
+    webhook_url="https://app.example/webhooks/batch",
+    secret="replace-with-a-secret",
+)
+```
+
+A tracked record must have an outbound `webhook_url` unless the poller was created with an in-process `on_complete` callback.
+
+## Run one scheduler tick
+
+```python
+result = await poller.tick()
+print(result.checked, result.delivered, result.failed)
+```
+
+`tick()` lists undelivered records, polls them serially to avoid provider bursts, updates non-terminal status changes, and delivers terminal records. By default an error stops the tick. Supply `on_error` to collect failures into `TickResult.failed` and continue.
+
+Always close the poller or use it as an async context manager:
+
+```python
+async with BatchPoller(store, credentials=credentials) as poller:
+    result = await poller.tick()
+```
+
+## Signed outbound delivery
+
+Outbound events use Standard Webhooks-compatible HMAC-SHA256 headers. The event ID remains stable for consumer idempotency; each network attempt gets a distinct delivery ID for replay protection.
+
+Destinations must use HTTPS, contain no URL credentials, and resolve only to globally routable addresses. Delivery is pinned to validated addresses and redirects fail. See [Security](/docs/guides/security#outbound-webhooks).
+
+Delivery is at least once: Batchwork performs the side effect before persisting `delivered_at`. Consumers must deduplicate by stable event ID.
+
+## Verify an inbound Batchwork webhook
+
+Verify the exact raw body before parsing JSON:
+
+```python
+from batchwork import verify_batch_webhook
+
+verified = await verify_batch_webhook(
+    request.headers,
+    await request.body(),
+    signing_secret,
+    replay_store=replay_store,
+)
+
+try:
+    event = verified.event
+    await handle_event(event)
+except Exception:
+    await verified.release()
+    raise
+```
+
+Release the replay claim only when handling failed and the delivery should be retried.
+
+## OpenAI native webhooks
+
+OpenAI native `batch.*` events can enter the same poller completion path:
+
+```python
+response = await poller.handle_openai_webhook(
+    request.headers,
+    await request.body(),
+    openai_signing_secret,
+    replay_store=replay_store,
+)
+```
+
+The helper verifies the signed event, ignores unrelated events, retrieves authoritative provider state, and suppresses duplicate delivery. Batchwork is framework-neutral: return `response.status_code`, `response.body`, and `response.headers` through your framework.
+
+Other providers use managed polling; there is no provider-specific inbound handler for them.
