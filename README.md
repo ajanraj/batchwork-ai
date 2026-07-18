@@ -18,13 +18,13 @@ Batchwork requires Python 3.11 or newer.
 With uv:
 
 ```bash
-uv add batchwork
+uv add batchwork-ai
 ```
 
 With pip:
 
 ```bash
-pip install batchwork
+pip install batchwork-ai
 ```
 
 Then configure a provider credential:
@@ -83,9 +83,9 @@ Image, PDF, text-file, and audio inputs for text requests vary separately from o
 Install the Upstash Redis integration for persistent polling state:
 
 ```bash
-uv add "batchwork[redis]"
+uv add "batchwork-ai[redis]"
 # or
-pip install "batchwork[redis]"
+pip install "batchwork-ai[redis]"
 ```
 
 The base package does not import or require `upstash-redis`.

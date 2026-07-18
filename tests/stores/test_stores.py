@@ -97,5 +97,5 @@ def test_redis_store_reports_missing_optional_dependency(
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", reject_upstash)
-    with pytest.raises(MissingDependencyError, match=r"batchwork\[redis\]"):
+    with pytest.raises(MissingDependencyError, match=r"batchwork-ai\[redis\]"):
         create_redis_store()
