@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import re
+import sqlite3
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -33,7 +33,14 @@ from ._contract import (
     SnapshotEnvelope,
     serialize_envelope,
 )
-from ._registry import RegistryJob, adopt_job, get_job, update_job, update_job_profile
+from ._registry import (
+    RegistryJob,
+    adopt_job,
+    get_job,
+    is_job_name,
+    update_job,
+    update_job_profile,
+)
 from ._state import OutputMode, RootOptions
 from ._submit_text import (
     ResolvedRoute,
@@ -41,8 +48,6 @@ from ._submit_text import (
     resolve_registered_route,
     resolve_route_descriptor,
 )
-
-_JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,8 +123,10 @@ def resolve_job(root: RootOptions, options: LifecycleOptions) -> ResolvedJob:
     loaded = load_config(root.config)
     if options.name is not None and not options.save:
         raise click.UsageError("--name requires --save.")
-    if options.name is not None and not _JOB_NAME.fullmatch(options.name):
-        raise click.UsageError("--name must be 1-64 shell-safe characters.")
+    if options.name is not None and not is_job_name(options.name):
+        raise click.UsageError(
+            "--name must be 1-64 shell-safe characters and cannot be a record ID."
+        )
 
     provider: BatchProvider | None = None
     provider_job_id: str | None = None
@@ -260,14 +267,39 @@ def _adopt_if_requested(
     if not options.save:
         return resolved
     selected_registry_path = registry_path(root.registry)
-    record = adopt_job(
-        selected_registry_path,
-        name=options.name,
-        profile=resolved.selected_profile,
-        route=resolved.route.registry,
-        snapshot=snapshot,
-        registered_at=datetime.now(UTC),
-    )
+    try:
+        record = adopt_job(
+            selected_registry_path,
+            name=options.name,
+            profile=resolved.selected_profile,
+            route=resolved.route.registry,
+            snapshot=snapshot,
+            registered_at=datetime.now(UTC),
+        )
+    except (OSError, sqlite3.Error) as error:
+        conflict = isinstance(error, sqlite3.IntegrityError) and options.name is not None
+        message = (
+            f'Local name "{options.name}" is already in use; the provider operation '
+            "succeeded but the registry was unchanged."
+            if conflict
+            else "The provider operation succeeded, but Batchwork could not update the registry."
+        )
+        raise LifecycleFailure(
+            ErrorEnvelope(
+                error=ErrorDetail(
+                    code="registry_name_conflict" if conflict else "registry_write_failed",
+                    category="local_state",
+                    message=message,
+                    exit_code=8,
+                    retryable=False,
+                    operation="adopt",
+                    provider=resolved.provider,
+                    job=f"{resolved.provider.value}:{resolved.provider_job_id}",
+                    routing_fingerprint=resolved.route.registry.fingerprint,
+                    registry_path=str(selected_registry_path),
+                )
+            )
+        ) from error
     return ResolvedJob(
         resolved.selector,
         resolved.provider,

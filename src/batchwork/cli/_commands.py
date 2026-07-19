@@ -5,14 +5,16 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import sqlite3
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypeVar
 
 import click
 
-from batchwork.types import BatchProvider, BatchResult
+from batchwork.types import BatchProvider, BatchResult, BatchStatus
 
 from ._config import API_KEY_ENV, ConfigError, load_config, registry_path, select_profile
 from ._contract import (
@@ -21,8 +23,12 @@ from ._contract import (
     ConfigViewEnvelope,
     ErrorDetail,
     ErrorEnvelope,
+    JobEnvelope,
+    JobListEnvelope,
     PathsEnvelope,
     PathState,
+    RegistryChangeEnvelope,
+    RegistryPrunePlanEnvelope,
     ResultEnvelope,
     RunEnvelope,
     SnapshotEnvelope,
@@ -43,6 +49,13 @@ from ._lifecycle import (
     status_job,
     unsuccessful,
     wait_job,
+)
+from ._registry import (
+    forget_job,
+    is_job_name,
+    is_record_id,
+    list_registry_jobs,
+    prune_jobs,
 )
 from ._state import OutputMode, RootOptions
 from ._submit_text import SubmissionResult, SubmitTextOptions, render_error, render_job
@@ -186,6 +199,38 @@ def _lifecycle_options(
 def _fail_lifecycle(failure: LifecycleFailure, mode: OutputMode) -> None:
     click.echo(render_lifecycle_error(failure, mode), nl=False, err=True)
     raise click.exceptions.Exit(failure.exit_code)
+
+
+def _fail_local_state(
+    root: RootOptions,
+    *,
+    code: str,
+    message: str,
+    operation: str,
+    path: Path,
+) -> None:
+    mode = _output_mode(root)
+    if mode in {OutputMode.JSON, OutputMode.JSONL}:
+        click.echo(
+            serialize_envelope(
+                ErrorEnvelope(
+                    error=ErrorDetail(
+                        code=code,
+                        category="local_state",
+                        message=message,
+                        exit_code=8,
+                        retryable=False,
+                        operation=operation,
+                        registry_path=str(path),
+                    )
+                )
+            ),
+            nl=False,
+            err=True,
+        )
+    else:
+        click.echo(f"Error: {message}", err=True)
+    raise click.exceptions.Exit(8)
 
 
 def _creation_options(function: CommandFunction) -> CommandFunction:
@@ -596,7 +641,11 @@ def status(
     options = _lifecycle_options(
         job, base_url, api_key_env, header, header_env, provider, save, name
     )
-    result = asyncio.run(status_job(root, options))
+    try:
+        result = asyncio.run(status_job(root, options))
+    except LifecycleFailure as failure:
+        _fail_lifecycle(failure, mode)
+        return
     click.echo(render_snapshot(result, mode), nl=False)
 
 
@@ -716,34 +765,158 @@ def cancel(
     options = _lifecycle_options(
         job, base_url, api_key_env, header, header_env, provider, save, name
     )
-    result = asyncio.run(cancel_job(root, options))
+    try:
+        result = asyncio.run(cancel_job(root, options))
+    except LifecycleFailure as failure:
+        _fail_lifecycle(failure, mode)
+        return
     click.echo(render_snapshot(result, mode), nl=False)
 
 
 @cli.command("list")
 @click.option("--provider", type=PROVIDER)
 @click.option("--modality", type=click.Choice(["text", "embeddings", "images"]))
-@click.option("--status", "statuses", multiple=True)
+@click.option(
+    "--status",
+    "statuses",
+    type=click.Choice([status.value for status in BatchStatus]),
+    multiple=True,
+)
 @click.option("--name")
 @click.option("--limit", type=click.IntRange(min=1))
-def list_jobs(**_: object) -> None:
+@click.pass_obj
+def list_jobs(
+    root: RootOptions,
+    provider: str | None,
+    modality: str | None,
+    statuses: tuple[str, ...],
+    name: str | None,
+    limit: int | None,
+) -> None:
     """List cached local registry records without provider scans."""
-    _foundation_only()
+    selected_registry = registry_path(root.registry)
+    try:
+        records = list_registry_jobs(
+            selected_registry,
+            provider=BatchProvider(provider) if provider is not None else None,
+            modality=modality,
+            statuses=tuple(BatchStatus(status) for status in statuses),
+            name=name,
+            limit=limit,
+        )
+    except (OSError, sqlite3.Error) as error:
+        _fail_local_state(
+            root,
+            code="registry_read_failed",
+            message=f"Could not read local registry: {error}.",
+            operation="list",
+            path=selected_registry,
+        )
+        return
+    mode = _output_mode(root)
+    if mode is OutputMode.JSONL:
+        for record in records:
+            click.echo(serialize_envelope(JobEnvelope(job=record.job)), nl=False)
+    elif mode is OutputMode.JSON:
+        click.echo(
+            serialize_envelope(JobListEnvelope(jobs=[record.job for record in records])),
+            nl=False,
+        )
+    elif not records:
+        click.echo("No local jobs.")
+    else:
+        for record in records:
+            job = record.job
+            selector = job.name or job.record_id
+            status = job.status.value if job.status is not None else "-"
+            click.echo(f"{selector}\t{job.provider.value}\t{status}\t{job.provider_job_id}")
 
 
 @cli.command()
 @click.argument("job")
-def forget(**_: object) -> None:
+@click.pass_obj
+def forget(root: RootOptions, job: str) -> None:
     """Remove one local record without changing the remote job."""
-    _foundation_only()
+    if ":" in job or (not is_record_id(job) and not is_job_name(job)):
+        raise click.UsageError("JOB must be a local alias or record ID.")
+    selected_registry = registry_path(root.registry)
+    try:
+        record = forget_job(selected_registry, job)
+    except (OSError, sqlite3.Error) as error:
+        _fail_local_state(
+            root,
+            code="registry_write_failed",
+            message=f"Could not update local registry: {error}.",
+            operation="forget",
+            path=selected_registry,
+        )
+        return
+    if record is None:
+        _fail_local_state(
+            root,
+            code="local_job_not_found",
+            message=f'Local JOB "{job}" was not found.',
+            operation="forget",
+            path=selected_registry,
+        )
+        return
+    envelope = RegistryChangeEnvelope(
+        operation="forget",
+        path=str(selected_registry),
+        changed_records=1,
+        record_id=record.job.record_id,
+        provider_reference=record.job.provider_reference,
+    )
+    mode = _output_mode(root)
+    if mode in {OutputMode.JSON, OutputMode.JSONL}:
+        click.echo(serialize_envelope(envelope), nl=False)
+    else:
+        click.echo(f"Forgot {record.job.record_id}; remote job unchanged.")
 
 
 @cli.command()
 @click.option("--older-than", required=True, type=DURATION, metavar="DURATION")
 @click.option("--yes", is_flag=True, help="Commit the displayed local deletion plan.")
-def prune(**_: object) -> None:
+@click.pass_obj
+def prune(root: RootOptions, older_than: str, yes: bool) -> None:
     """Preview or commit deletion of old terminal local records."""
-    _foundation_only()
+    seconds = duration_seconds(older_than)
+    if seconds is None:
+        raise click.UsageError("--older-than is required.")
+    cutoff_at = datetime.now(UTC) - timedelta(seconds=seconds)
+    selected_registry = registry_path(root.registry)
+    try:
+        changed_records = prune_jobs(selected_registry, cutoff_at, commit=yes)
+    except (OSError, sqlite3.Error) as error:
+        _fail_local_state(
+            root,
+            code="registry_write_failed" if yes else "registry_read_failed",
+            message=f"Could not {'update' if yes else 'read'} local registry: {error}.",
+            operation="prune",
+            path=selected_registry,
+        )
+        return
+    mode = _output_mode(root)
+    if yes:
+        envelope = RegistryChangeEnvelope(
+            operation="prune",
+            path=str(selected_registry),
+            changed_records=changed_records,
+            older_than=older_than,
+        )
+        human = f"Pruned {changed_records} local terminal record(s); remote jobs unchanged."
+    else:
+        envelope = RegistryPrunePlanEnvelope(
+            path=str(selected_registry),
+            older_than=older_than,
+            cutoff_at=cutoff_at,
+            candidate_records=changed_records,
+        )
+        human = f"Would prune {changed_records} local terminal record(s); rerun with --yes."
+    if mode in {OutputMode.JSON, OutputMode.JSONL}:
+        click.echo(serialize_envelope(envelope), nl=False)
+    else:
+        click.echo(human)
 
 
 @cli.group(no_args_is_help=True)
