@@ -9,6 +9,7 @@ import sys
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -134,9 +135,20 @@ def normalize_base_url(value: str | None, label: str = "base URL") -> str | None
     if value is None:
         return None
     parsed = urlsplit(value)
-    loopback = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+    hostname = parsed.hostname
+    try:
+        _ = parsed.port
+    except ValueError as error:
+        raise ConfigError(f"{label} contains an invalid port.") from error
+    loopback = hostname == "localhost"
+    if hostname is not None:
+        try:
+            loopback = loopback or ip_address(hostname).is_loopback
+        except ValueError:
+            pass
     if (
-        not parsed.hostname
+        not hostname
+        or any(character.isspace() for character in parsed.netloc)
         or parsed.username is not None
         or parsed.password is not None
         or parsed.query
