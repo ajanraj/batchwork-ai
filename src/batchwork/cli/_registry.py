@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +25,10 @@ from ._contract import Job
 
 _RECORD_ID = re.compile(r"^bw_[0-9a-f]{32}$")
 _JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_TERMINAL_STATUS_VALUES = tuple(
+    status.value for status in BatchStatus if is_terminal_status(status)
+)
+_TERMINAL_STATUS_PLACEHOLDERS = ", ".join("?" for _ in _TERMINAL_STATUS_VALUES)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -54,6 +59,16 @@ CREATE TABLE IF NOT EXISTS jobs (
 )
 """
 
+_INSERT_JOB = """
+INSERT INTO jobs (
+    record_id, name, provider, provider_job_id, provider_reference,
+    routing_fingerprint, api_key_env, base_url, headers_json, header_env_json,
+    modality, model, profile, status, request_total, request_completed,
+    request_failed, registered_at, provider_created_at, completed_at, expires_at,
+    terminal_at, last_refreshed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class RegistryRoute:
@@ -70,12 +85,80 @@ class RegistryJob:
     route: RegistryRoute
 
 
+class RegistryNameConflict(sqlite3.IntegrityError):
+    pass
+
+
 def is_record_id(value: str) -> bool:
     return _RECORD_ID.fullmatch(value) is not None
 
 
 def is_job_name(value: str) -> bool:
     return _JOB_NAME.fullmatch(value) is not None and not is_record_id(value)
+
+
+def _raise_name_conflict(
+    connection: sqlite3.Connection, name: str | None, error: sqlite3.IntegrityError
+) -> None:
+    if (
+        name is not None
+        and connection.execute("SELECT 1 FROM jobs WHERE name = ?", (name,)).fetchone()
+    ):
+        raise RegistryNameConflict(name) from error
+    raise error
+
+
+def _enable_wal(connection: sqlite3.Connection) -> None:
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as error:
+            if error.sqlite_errorcode not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
+
+
+def _job_values(
+    *,
+    record_id: str,
+    name: str | None,
+    modality: str | None,
+    model: str | None,
+    profile: str | None,
+    route: RegistryRoute,
+    snapshot: BatchSnapshot,
+    registered_at: datetime,
+) -> tuple[str | int | None, ...]:
+    counts = snapshot.request_counts
+    return (
+        record_id,
+        name,
+        snapshot.provider.value,
+        snapshot.id,
+        f"{snapshot.provider.value}:{snapshot.id}",
+        route.fingerprint,
+        route.api_key_env,
+        route.base_url,
+        json.dumps(route.headers, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        json.dumps(route.header_env, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+        modality,
+        model,
+        profile,
+        snapshot.status.value,
+        counts.total,
+        counts.completed,
+        counts.failed,
+        registered_at.isoformat(),
+        snapshot.created_at.isoformat() if snapshot.created_at else None,
+        snapshot.completed_at.isoformat() if snapshot.completed_at else None,
+        snapshot.expires_at.isoformat() if snapshot.expires_at else None,
+        registered_at.isoformat() if is_terminal_status(snapshot.status) else None,
+        registered_at.isoformat(),
+    )
 
 
 def insert_job(
@@ -98,49 +181,25 @@ def insert_job(
         if os.name == "posix":
             path.chmod(0o600)
         connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA journal_mode = WAL")
+        _enable_wal(connection)
         connection.execute(SCHEMA)
         connection.execute("PRAGMA user_version = 1")
-        connection.execute(
-            """
-            INSERT INTO jobs (
-                record_id, name, provider, provider_job_id, provider_reference,
-                routing_fingerprint, api_key_env, base_url, headers_json, header_env_json,
-                modality, model, profile, status, request_total, request_completed,
-                request_failed, registered_at, provider_created_at, completed_at, expires_at,
-                terminal_at, last_refreshed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record_id,
-                name,
-                snapshot.provider.value,
-                snapshot.id,
-                provider_reference,
-                route.fingerprint,
-                route.api_key_env,
-                route.base_url,
-                json.dumps(
-                    route.headers, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        try:
+            connection.execute(
+                _INSERT_JOB,
+                _job_values(
+                    record_id=record_id,
+                    name=name,
+                    modality="text",
+                    model=model,
+                    profile=profile,
+                    route=route,
+                    snapshot=snapshot,
+                    registered_at=registered_at,
                 ),
-                json.dumps(
-                    route.header_env, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-                ),
-                "text",
-                model,
-                profile,
-                snapshot.status.value,
-                counts.total,
-                counts.completed,
-                counts.failed,
-                registered_at.isoformat(),
-                snapshot.created_at.isoformat() if snapshot.created_at else None,
-                snapshot.completed_at.isoformat() if snapshot.completed_at else None,
-                snapshot.expires_at.isoformat() if snapshot.expires_at else None,
-                registered_at.isoformat() if is_terminal_status(snapshot.status) else None,
-                registered_at.isoformat(),
-            ),
-        )
+            )
+        except sqlite3.IntegrityError as error:
+            _raise_name_conflict(connection, name, error)
     return Job(
         record_id=record_id,
         name=name,
@@ -178,7 +237,7 @@ def adopt_job(
             path.chmod(0o600)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA journal_mode = WAL")
+        _enable_wal(connection)
         connection.execute(SCHEMA)
         _ensure_columns(connection)
         connection.execute("PRAGMA user_version = 1")
@@ -192,14 +251,18 @@ def adopt_job(
         ).fetchone()
         if row is not None:
             if name is not None and row["name"] not in {None, name}:
-                raise sqlite3.IntegrityError("job already has a different name")
+                raise RegistryNameConflict(name)
             if name is not None and row["name"] is None:
-                connection.execute(
-                    "UPDATE jobs SET name = ? WHERE record_id = ?", (name, row["record_id"])
-                )
+                try:
+                    connection.execute(
+                        "UPDATE jobs SET name = ? WHERE record_id = ?",
+                        (name, row["record_id"]),
+                    )
+                except sqlite3.IntegrityError as error:
+                    _raise_name_conflict(connection, name, error)
             counts = snapshot.request_counts
             connection.execute(
-                """
+                f"""
                 UPDATE jobs SET profile = COALESCE(?, profile), status = ?,
                     request_total = ?, request_completed = ?, request_failed = ?,
                     provider_created_at = COALESCE(provider_created_at, ?),
@@ -207,8 +270,8 @@ def adopt_job(
                     terminal_at = COALESCE(terminal_at, ?), last_refreshed_at = ?
                 WHERE record_id = ?
                     AND (
-                        status NOT IN ('completed', 'failed', 'expired', 'cancelled')
-                        OR status = ?
+                        status NOT IN ({_TERMINAL_STATUS_PLACEHOLDERS})
+                        OR ?
                     )
                 """,
                 (
@@ -223,7 +286,8 @@ def adopt_job(
                     registered_at.isoformat() if is_terminal_status(snapshot.status) else None,
                     registered_at.isoformat(),
                     row["record_id"],
-                    snapshot.status.value,
+                    *_TERMINAL_STATUS_VALUES,
+                    is_terminal_status(snapshot.status),
                 ),
             )
             row = connection.execute(
@@ -233,44 +297,22 @@ def adopt_job(
                 raise sqlite3.IntegrityError("adopted job disappeared")
             return _registry_job(row)
         record_id = f"bw_{uuid4().hex}"
-        counts = snapshot.request_counts
-        provider_reference = f"{snapshot.provider.value}:{snapshot.id}"
-        connection.execute(
-            """
-            INSERT INTO jobs (
-                record_id, name, provider, provider_job_id, provider_reference,
-                routing_fingerprint, api_key_env, base_url, headers_json, header_env_json,
-                modality, model, profile, status, request_total, request_completed,
-                request_failed, registered_at, provider_created_at, completed_at, expires_at,
-                terminal_at, last_refreshed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record_id,
-                name,
-                snapshot.provider.value,
-                snapshot.id,
-                provider_reference,
-                route.fingerprint,
-                route.api_key_env,
-                route.base_url,
-                json.dumps(route.headers, separators=(",", ":"), sort_keys=True),
-                json.dumps(route.header_env, separators=(",", ":"), sort_keys=True),
-                "text",
-                None,
-                profile,
-                snapshot.status.value,
-                counts.total,
-                counts.completed,
-                counts.failed,
-                registered_at.isoformat(),
-                snapshot.created_at.isoformat() if snapshot.created_at else None,
-                snapshot.completed_at.isoformat() if snapshot.completed_at else None,
-                snapshot.expires_at.isoformat() if snapshot.expires_at else None,
-                registered_at.isoformat() if is_terminal_status(snapshot.status) else None,
-                registered_at.isoformat(),
-            ),
-        )
+        try:
+            connection.execute(
+                _INSERT_JOB,
+                _job_values(
+                    record_id=record_id,
+                    name=name,
+                    modality=None,
+                    model=None,
+                    profile=profile,
+                    route=route,
+                    snapshot=snapshot,
+                    registered_at=registered_at,
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            _raise_name_conflict(connection, name, error)
         row = connection.execute("SELECT * FROM jobs WHERE record_id = ?", (record_id,)).fetchone()
     if row is None:
         raise sqlite3.IntegrityError("adopted job was not persisted")
@@ -339,14 +381,14 @@ def update_job(path: Path, record_id: str, snapshot: BatchSnapshot, refreshed_at
     with sqlite3.connect(path, timeout=5) as connection:
         _ensure_columns(connection)
         connection.execute(
-            """
+            f"""
             UPDATE jobs SET status = ?, request_total = ?, request_completed = ?,
                 request_failed = ?, completed_at = ?, expires_at = ?,
                 terminal_at = COALESCE(terminal_at, ?), last_refreshed_at = ?
             WHERE record_id = ?
                 AND (
-                    status NOT IN ('completed', 'failed', 'expired', 'cancelled')
-                    OR status = ?
+                    status NOT IN ({_TERMINAL_STATUS_PLACEHOLDERS})
+                    OR ?
                 )
             """,
             (
@@ -359,7 +401,8 @@ def update_job(path: Path, record_id: str, snapshot: BatchSnapshot, refreshed_at
                 refreshed_at.isoformat() if terminal else None,
                 refreshed_at.isoformat(),
                 record_id,
-                snapshot.status.value,
+                *_TERMINAL_STATUS_VALUES,
+                terminal,
             ),
         )
 
@@ -428,15 +471,8 @@ def forget_job(path: Path, selector: str) -> RegistryJob | None:
 def prune_jobs(path: Path, cutoff_at: datetime, *, commit: bool) -> int:
     if not path.is_file():
         return 0
-    terminal_statuses = (
-        BatchStatus.COMPLETED.value,
-        BatchStatus.FAILED.value,
-        BatchStatus.EXPIRED.value,
-        BatchStatus.CANCELLED.value,
-    )
-    placeholders = ", ".join("?" for _ in terminal_statuses)
-    predicate = f"status IN ({placeholders}) AND terminal_at < ?"
-    parameters = (*terminal_statuses, cutoff_at.isoformat())
+    predicate = f"status IN ({_TERMINAL_STATUS_PLACEHOLDERS}) AND terminal_at < ?"
+    parameters = (*_TERMINAL_STATUS_VALUES, cutoff_at.isoformat())
     with sqlite3.connect(path, timeout=5) as connection:
         connection.execute("PRAGMA busy_timeout = 5000")
         _ensure_columns(connection)
