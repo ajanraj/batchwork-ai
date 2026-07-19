@@ -1,0 +1,1817 @@
+{
+  "$defs": {
+    "BatchImage": {
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data"
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Type"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "title": "BatchImage",
+      "type": "object"
+    },
+    "BatchProvider": {
+      "enum": [
+        "anthropic",
+        "google",
+        "groq",
+        "mistral",
+        "openai",
+        "together",
+        "xai"
+      ],
+      "title": "BatchProvider",
+      "type": "string"
+    },
+    "BatchRequestCounts": {
+      "properties": {
+        "canceled": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Canceled"
+        },
+        "completed": {
+          "minimum": 0,
+          "title": "Completed",
+          "type": "integer"
+        },
+        "expired": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expired"
+        },
+        "failed": {
+          "minimum": 0,
+          "title": "Failed",
+          "type": "integer"
+        },
+        "processing": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Processing"
+        },
+        "total": {
+          "minimum": 0,
+          "title": "Total",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total",
+        "completed",
+        "failed"
+      ],
+      "title": "BatchRequestCounts",
+      "type": "object"
+    },
+    "BatchResult": {
+      "properties": {
+        "custom_id": {
+          "title": "Custom Id",
+          "type": "string"
+        },
+        "embedding": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Embedding"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BatchResultError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "images": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/BatchImage"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Images"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "$ref": "#/$defs/BatchResultStatus"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BatchUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "custom_id",
+        "status"
+      ],
+      "title": "BatchResult",
+      "type": "object"
+    },
+    "BatchResultError": {
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Code"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "title": "BatchResultError",
+      "type": "object"
+    },
+    "BatchResultStatus": {
+      "enum": [
+        "succeeded",
+        "errored",
+        "expired",
+        "canceled"
+      ],
+      "title": "BatchResultStatus",
+      "type": "string"
+    },
+    "BatchSnapshot": {
+      "properties": {
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/BatchProvider"
+        },
+        "raw": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "request_counts": {
+          "$ref": "#/$defs/BatchRequestCounts"
+        },
+        "status": {
+          "$ref": "#/$defs/BatchStatus"
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "status",
+        "request_counts"
+      ],
+      "title": "BatchSnapshot",
+      "type": "object"
+    },
+    "BatchStatus": {
+      "enum": [
+        "validating",
+        "in_progress",
+        "finalizing",
+        "completed",
+        "failed",
+        "expired",
+        "cancelling",
+        "cancelled"
+      ],
+      "title": "BatchStatus",
+      "type": "string"
+    },
+    "BatchUsage": {
+      "properties": {
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "total_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Tokens"
+        }
+      },
+      "title": "BatchUsage",
+      "type": "object"
+    },
+    "ConfigProviderView": {
+      "properties": {
+        "api_key_env": {
+          "title": "Api Key Env",
+          "type": "string"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "header_env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Header Env",
+          "type": "object"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Headers",
+          "type": "object"
+        }
+      },
+      "required": [
+        "api_key_env"
+      ],
+      "title": "ConfigProviderView",
+      "type": "object"
+    },
+    "ConfigValidationEnvelope": {
+      "properties": {
+        "config_schema_version": {
+          "anyOf": [
+            {
+              "const": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config Schema Version"
+        },
+        "credentials_read": {
+          "const": false,
+          "default": false,
+          "title": "Credentials Read",
+          "type": "boolean"
+        },
+        "default_profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Profile"
+        },
+        "exists": {
+          "title": "Exists",
+          "type": "boolean"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "profiles": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Profiles",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "config_validation",
+          "default": "config_validation",
+          "title": "Type",
+          "type": "string"
+        },
+        "valid": {
+          "title": "Valid",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "exists",
+        "valid"
+      ],
+      "title": "ConfigValidationEnvelope",
+      "type": "object"
+    },
+    "ConfigViewEnvelope": {
+      "properties": {
+        "credentials_read": {
+          "const": false,
+          "default": false,
+          "title": "Credentials Read",
+          "type": "boolean"
+        },
+        "models": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Models",
+          "type": "object"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile"
+        },
+        "providers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ConfigProviderView"
+          },
+          "title": "Providers",
+          "type": "object"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "config_view",
+          "default": "config_view",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "ConfigViewEnvelope",
+      "type": "object"
+    },
+    "ErrorDetail": {
+      "properties": {
+        "cancel_requested": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cancel Requested"
+        },
+        "category": {
+          "enum": [
+            "internal",
+            "usage",
+            "configuration",
+            "provider_rejection",
+            "provider_availability",
+            "job_state",
+            "wait_timeout",
+            "local_state",
+            "interrupted",
+            "terminated"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "code": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Code",
+          "type": "string"
+        },
+        "config_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config Path"
+        },
+        "exit_code": {
+          "enum": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            130,
+            143
+          ],
+          "title": "Exit Code",
+          "type": "integer"
+        },
+        "http_status": {
+          "anyOf": [
+            {
+              "maximum": 599,
+              "minimum": 100,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Http Status"
+        },
+        "item_failures": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Item Failures"
+        },
+        "item_successes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Item Successes"
+        },
+        "job": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job"
+        },
+        "materialized_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Materialized Bytes"
+        },
+        "materialized_images": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Materialized Images"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "operation": {
+          "minLength": 1,
+          "title": "Operation",
+          "type": "string"
+        },
+        "partial_output": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Partial Output"
+        },
+        "profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BatchProvider"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "records_emitted": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Records Emitted"
+        },
+        "recovery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Recovery"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "registry_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Registry Path"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Id"
+        },
+        "retry_after_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retry After Seconds"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "routing_fingerprint": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Routing Fingerprint"
+        },
+        "submission_outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "not_sent",
+                "rejected",
+                "unknown",
+                "accepted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submission Outcome"
+        }
+      },
+      "required": [
+        "code",
+        "category",
+        "message",
+        "exit_code",
+        "retryable",
+        "operation"
+      ],
+      "title": "ErrorDetail",
+      "type": "object"
+    },
+    "ErrorEnvelope": {
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ErrorDetail"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "error",
+          "default": "error",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "title": "ErrorEnvelope",
+      "type": "object"
+    },
+    "ImageManifestEntry": {
+      "properties": {
+        "byte_count": {
+          "minimum": 0,
+          "title": "Byte Count",
+          "type": "integer"
+        },
+        "custom_id": {
+          "title": "Custom Id",
+          "type": "string"
+        },
+        "image_index": {
+          "minimum": 1,
+          "title": "Image Index",
+          "type": "integer"
+        },
+        "media_type": {
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "source_kind": {
+          "enum": [
+            "data",
+            "url"
+          ],
+          "title": "Source Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "custom_id",
+        "image_index",
+        "source_kind",
+        "media_type",
+        "byte_count",
+        "sha256"
+      ],
+      "title": "ImageManifestEntry",
+      "type": "object"
+    },
+    "ImageManifestEnvelope": {
+      "properties": {
+        "images": {
+          "items": {
+            "$ref": "#/$defs/ImageManifestEntry"
+          },
+          "title": "Images",
+          "type": "array"
+        },
+        "job": {
+          "title": "Job",
+          "type": "string"
+        },
+        "routing_fingerprint": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Routing Fingerprint"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "image_manifest",
+          "default": "image_manifest",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job",
+        "images"
+      ],
+      "title": "ImageManifestEnvelope",
+      "type": "object"
+    },
+    "Job": {
+      "properties": {
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        },
+        "last_refreshed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Refreshed At"
+        },
+        "modality": {
+          "anyOf": [
+            {
+              "enum": [
+                "text",
+                "embeddings",
+                "images"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modality"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile"
+        },
+        "provider": {
+          "$ref": "#/$defs/BatchProvider"
+        },
+        "provider_created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Created At"
+        },
+        "provider_job_id": {
+          "minLength": 1,
+          "title": "Provider Job Id",
+          "type": "string"
+        },
+        "provider_reference": {
+          "minLength": 3,
+          "title": "Provider Reference",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "pattern": "^bw_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Record Id"
+        },
+        "registered_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Registered At"
+        },
+        "request_counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BatchRequestCounts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "routing_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Routing Fingerprint",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BatchStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "terminal_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal At"
+        }
+      },
+      "required": [
+        "provider",
+        "provider_job_id",
+        "provider_reference",
+        "routing_fingerprint"
+      ],
+      "title": "Job",
+      "type": "object"
+    },
+    "JobEnvelope": {
+      "properties": {
+        "job": {
+          "$ref": "#/$defs/Job"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "job",
+          "default": "job",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "title": "JobEnvelope",
+      "type": "object"
+    },
+    "JobListEnvelope": {
+      "properties": {
+        "jobs": {
+          "items": {
+            "$ref": "#/$defs/Job"
+          },
+          "title": "Jobs",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "job_list",
+          "default": "job_list",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "jobs"
+      ],
+      "title": "JobListEnvelope",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "Materialization": {
+      "properties": {
+        "images": {
+          "items": {
+            "$ref": "#/$defs/ImageManifestEntry"
+          },
+          "title": "Images",
+          "type": "array"
+        },
+        "manifest": {
+          "const": "manifest.json",
+          "default": "manifest.json",
+          "title": "Manifest",
+          "type": "string"
+        },
+        "output_dir": {
+          "title": "Output Dir",
+          "type": "string"
+        }
+      },
+      "required": [
+        "output_dir",
+        "images"
+      ],
+      "title": "Materialization",
+      "type": "object"
+    },
+    "PathState": {
+      "properties": {
+        "exists": {
+          "title": "Exists",
+          "type": "boolean"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "exists"
+      ],
+      "title": "PathState",
+      "type": "object"
+    },
+    "PathsEnvelope": {
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/PathState"
+        },
+        "registry": {
+          "$ref": "#/$defs/PathState"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "paths",
+          "default": "paths",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "config",
+        "registry"
+      ],
+      "title": "PathsEnvelope",
+      "type": "object"
+    },
+    "Recovery": {
+      "properties": {
+        "action": {
+          "minLength": 1,
+          "title": "Action",
+          "type": "string"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "Recovery",
+      "type": "object"
+    },
+    "RegistryChangeEnvelope": {
+      "properties": {
+        "backup_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backup Path"
+        },
+        "changed_records": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Changed Records"
+        },
+        "older_than": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Older Than"
+        },
+        "operation": {
+          "enum": [
+            "forget",
+            "prune",
+            "reset"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "provider_reference": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Reference"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "pattern": "^bw_[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Record Id"
+        },
+        "records_count_known": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Records Count Known"
+        },
+        "remote_jobs_changed": {
+          "const": false,
+          "default": false,
+          "title": "Remote Jobs Changed",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "registry_change",
+          "default": "registry_change",
+          "title": "Type",
+          "type": "string"
+        },
+        "user_version": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Version"
+        }
+      },
+      "required": [
+        "operation",
+        "path"
+      ],
+      "title": "RegistryChangeEnvelope",
+      "type": "object"
+    },
+    "RegistryCheckEnvelope": {
+      "properties": {
+        "integrity": {
+          "title": "Integrity",
+          "type": "string"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "registry_check",
+          "default": "registry_check",
+          "title": "Type",
+          "type": "string"
+        },
+        "user_version": {
+          "minimum": 0,
+          "title": "User Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "ok",
+        "user_version",
+        "integrity"
+      ],
+      "title": "RegistryCheckEnvelope",
+      "type": "object"
+    },
+    "RegistryPrunePlanEnvelope": {
+      "properties": {
+        "candidate_records": {
+          "minimum": 0,
+          "title": "Candidate Records",
+          "type": "integer"
+        },
+        "committed": {
+          "const": false,
+          "default": false,
+          "title": "Committed",
+          "type": "boolean"
+        },
+        "cutoff_at": {
+          "format": "date-time",
+          "title": "Cutoff At",
+          "type": "string"
+        },
+        "older_than": {
+          "title": "Older Than",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "remote_jobs_changed": {
+          "const": false,
+          "default": false,
+          "title": "Remote Jobs Changed",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "registry_prune_plan",
+          "default": "registry_prune_plan",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "older_than",
+        "cutoff_at",
+        "candidate_records"
+      ],
+      "title": "RegistryPrunePlanEnvelope",
+      "type": "object"
+    },
+    "ResultEnvelope": {
+      "properties": {
+        "job": {
+          "title": "Job",
+          "type": "string"
+        },
+        "materialization": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Materialization"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "result": {
+          "$ref": "#/$defs/BatchResult"
+        },
+        "routing_fingerprint": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Routing Fingerprint"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "result",
+          "default": "result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job",
+        "result"
+      ],
+      "title": "ResultEnvelope",
+      "type": "object"
+    },
+    "ResultListEnvelope": {
+      "properties": {
+        "job": {
+          "title": "Job",
+          "type": "string"
+        },
+        "materialization": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Materialization"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "results": {
+          "items": {
+            "$ref": "#/$defs/BatchResult"
+          },
+          "title": "Results",
+          "type": "array"
+        },
+        "routing_fingerprint": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Routing Fingerprint"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "type": {
+          "const": "result_list",
+          "default": "result_list",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job",
+        "results"
+      ],
+      "title": "ResultListEnvelope",
+      "type": "object"
+    },
+    "RunEnvelope": {
+      "properties": {
+        "job": {
+          "$ref": "#/$defs/Job"
+        },
+        "materialization": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Materialization"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "results": {
+          "items": {
+            "$ref": "#/$defs/BatchResult"
+          },
+          "title": "Results",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/BatchSnapshot"
+        },
+        "type": {
+          "const": "run",
+          "default": "run",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job",
+        "snapshot",
+        "results"
+      ],
+      "title": "RunEnvelope",
+      "type": "object"
+    },
+    "SnapshotEnvelope": {
+      "properties": {
+        "job": {
+          "title": "Job",
+          "type": "string"
+        },
+        "routing_fingerprint": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Routing Fingerprint"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/BatchSnapshot"
+        },
+        "type": {
+          "const": "snapshot",
+          "default": "snapshot",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job",
+        "snapshot"
+      ],
+      "title": "SnapshotEnvelope",
+      "type": "object"
+    }
+  },
+  "$id": "https://batchwork.ajanraj.com/schemas/batchwork-cli-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "discriminator": {
+    "mapping": {
+      "config_validation": "#/$defs/ConfigValidationEnvelope",
+      "config_view": "#/$defs/ConfigViewEnvelope",
+      "error": "#/$defs/ErrorEnvelope",
+      "image_manifest": "#/$defs/ImageManifestEnvelope",
+      "job": "#/$defs/JobEnvelope",
+      "job_list": "#/$defs/JobListEnvelope",
+      "paths": "#/$defs/PathsEnvelope",
+      "registry_change": "#/$defs/RegistryChangeEnvelope",
+      "registry_check": "#/$defs/RegistryCheckEnvelope",
+      "registry_prune_plan": "#/$defs/RegistryPrunePlanEnvelope",
+      "result": "#/$defs/ResultEnvelope",
+      "result_list": "#/$defs/ResultListEnvelope",
+      "run": "#/$defs/RunEnvelope",
+      "snapshot": "#/$defs/SnapshotEnvelope"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/JobEnvelope"
+    },
+    {
+      "$ref": "#/$defs/SnapshotEnvelope"
+    },
+    {
+      "$ref": "#/$defs/ResultEnvelope"
+    },
+    {
+      "$ref": "#/$defs/JobListEnvelope"
+    },
+    {
+      "$ref": "#/$defs/ResultListEnvelope"
+    },
+    {
+      "$ref": "#/$defs/RunEnvelope"
+    },
+    {
+      "$ref": "#/$defs/ErrorEnvelope"
+    },
+    {
+      "$ref": "#/$defs/PathsEnvelope"
+    },
+    {
+      "$ref": "#/$defs/ConfigValidationEnvelope"
+    },
+    {
+      "$ref": "#/$defs/ConfigViewEnvelope"
+    },
+    {
+      "$ref": "#/$defs/RegistryCheckEnvelope"
+    },
+    {
+      "$ref": "#/$defs/RegistryPrunePlanEnvelope"
+    },
+    {
+      "$ref": "#/$defs/RegistryChangeEnvelope"
+    },
+    {
+      "$ref": "#/$defs/ImageManifestEnvelope"
+    }
+  ],
+  "title": "Batchwork CLI machine envelope schema version 1"
+}

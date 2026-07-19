@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"registry_change","operation":"forget","path":"/home/example/.local/share/batchwork/registry.sqlite3","changed_records":1,"record_id":"bw_0123456789abcdef0123456789abcdef","provider_reference":"openai:batch_example","remote_jobs_changed":false}

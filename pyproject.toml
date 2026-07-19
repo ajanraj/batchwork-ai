@@ -25,10 +25,14 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
+  "click>=8.4,<9",
   "httpcore>=1,<2",
   "httpx>=0.28,<1",
   "pydantic>=2.11,<3",
 ]
+
+[project.scripts]
+batchwork = "batchwork.cli:main"
 
 [project.optional-dependencies]
 redis = ["upstash-redis>=1.4,<2"]
@@ -40,6 +44,7 @@ Repository = "https://github.com/ajanraj/batchwork-ai"
 
 [dependency-groups]
 dev = [
+  "jsonschema>=4.25,<5",
   "pytest>=8.4,<9",
   "pytest-asyncio>=1,<2",
   "pytest-cov>=6.2,<7",
