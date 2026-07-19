@@ -6,7 +6,7 @@ import pytest
 import batchwork.client as client_module
 from batchwork import Batchwork
 from batchwork.body import BuiltRequest
-from batchwork.errors import BatchClosedError, BatchworkError
+from batchwork.errors import BatchClosedError, BatchworkError, MediaResolutionError
 from batchwork.media import ResolvedMedia
 from batchwork.types import (
     BatchImageRequest,
@@ -180,6 +180,79 @@ async def test_client_preserves_provider_supported_remote_media(
     )
     assert adapter.built
     assert media_url in str(adapter.built[0].body)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_enforces_aggregate_decoded_media_limit(monkeypatch) -> None:
+    adapter = FakeAdapter()
+    monkeypatch.setattr(client_module, "_get_adapter", lambda provider, client: adapter)
+
+    class Resolver:
+        async def resolve(self, source, *, media_type=None, max_bytes):
+            return ResolvedMedia(b"123456", "image/png")
+
+    client = Batchwork(media_resolver=Resolver())
+    with pytest.raises(BatchworkError, match="aggregate decoded media"):
+        await client.batch(
+            model="openai/gpt-4.1",
+            requests=[
+                BatchRequest(
+                    messages=[
+                        UserMessage(
+                            content=[
+                                ImagePart(image=b"first"),
+                                ImagePart(image=b"second"),
+                            ]
+                        )
+                    ]
+                )
+            ],
+            limits=BatchLimits(max_request_bytes=10, max_upload_bytes=10),
+        )
+    assert adapter.built == []
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_completes_local_media_preflight_before_remote_fetch(monkeypatch) -> None:
+    adapter = FakeAdapter()
+    monkeypatch.setattr(client_module, "_get_adapter", lambda provider, client: adapter)
+    resolved_sources: list[object] = []
+
+    class Resolver:
+        async def resolve(self, source, *, media_type=None, max_bytes):
+            resolved_sources.append(source)
+            if str(source).startswith("https://"):
+                raise AssertionError("remote media fetched before local preflight completed")
+            raise MediaResolutionError("batchwork: invalid local media")
+
+    client = Batchwork(media_resolver=Resolver())
+    with pytest.raises(MediaResolutionError, match="invalid local media"):
+        await client.batch(
+            model="together/model",
+            requests=[
+                BatchRequest(
+                    messages=[
+                        UserMessage(
+                            content=[
+                                FilePart(
+                                    data="https://example.com/file.txt", media_type="text/plain"
+                                )
+                            ]
+                        )
+                    ]
+                ),
+                BatchRequest(
+                    messages=[
+                        UserMessage(content=[FilePart(data="invalid", media_type="text/plain")])
+                    ]
+                ),
+            ],
+        )
+
+    assert resolved_sources == ["invalid"]
+    assert adapter.built == []
     await client.aclose()
 
 

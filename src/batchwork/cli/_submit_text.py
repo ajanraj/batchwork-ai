@@ -15,9 +15,11 @@ from pathlib import Path
 import click
 from pydantic import TypeAdapter, ValidationError
 
+from batchwork._limits import LARGE_BATCH_REQUESTS, LARGE_BATCH_UPLOAD_BYTES, PROVIDER_OPTIONS_BYTES
 from batchwork.body import build_text_bodies, validate_request_count
 from batchwork.client import Batchwork
 from batchwork.errors import BatchworkError
+from batchwork.providers.shared import serialized_upload_validation
 from batchwork.types import (
     BatchDefaults,
     BatchLimits,
@@ -51,6 +53,7 @@ from ._contract import (
 )
 from ._failures import (
     CliFailure,
+    CliUsageError,
     FailureContext,
     InterruptionRequested,
     TerminationRequested,
@@ -63,7 +66,6 @@ from ._state import OutputMode, RootOptions
 _JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _RECORD_ID = re.compile(r"^bw_[0-9a-f]{32}$")
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
-_MAX_PROVIDER_OPTIONS_BYTES = 1024 * 1024
 _active_submission_context: FailureContext | None = None
 
 
@@ -272,8 +274,11 @@ def resolve_registered_route(provider: BatchProvider, route: RegistryRoute) -> R
 
 
 def _parse_json_object(document: str, label: str) -> dict[str, JsonValue]:
-    if len(document.encode()) > _MAX_PROVIDER_OPTIONS_BYTES:
-        raise _usage(f"{label} exceeds the {_MAX_PROVIDER_OPTIONS_BYTES} byte limit.")
+    if len(document.encode()) > PROVIDER_OPTIONS_BYTES:
+        raise CliUsageError(
+            f"{label} exceeds the {PROVIDER_OPTIONS_BYTES} byte limit.",
+            code="hard_limit_exceeded",
+        )
     try:
         json.loads(document, parse_constant=_reject_json_constant)
         return _JSON_OBJECT.validate_json(document)
@@ -295,10 +300,11 @@ def _provider_options(
     if source is not None:
         try:
             with source.open("rb") as stream:
-                encoded = stream.read(_MAX_PROVIDER_OPTIONS_BYTES + 1)
-            if len(encoded) > _MAX_PROVIDER_OPTIONS_BYTES:
-                raise _usage(
-                    f"Provider options exceed the {_MAX_PROVIDER_OPTIONS_BYTES} byte limit."
+                encoded = stream.read(PROVIDER_OPTIONS_BYTES + 1)
+            if len(encoded) > PROVIDER_OPTIONS_BYTES:
+                raise CliUsageError(
+                    f"Provider options exceed the {PROVIDER_OPTIONS_BYTES} byte limit.",
+                    code="hard_limit_exceeded",
                 )
             document = encoded.decode("utf-8-sig")
         except click.UsageError:
@@ -410,9 +416,7 @@ async def submit_text(
         stop=options.stop,
         tool_choice=options.tool_choice,
     )
-    limits = BatchLimits(
-        max_upload_bytes=(200 * 1024 * 1024 if options.allow_large_batch else 50 * 1024 * 1024)
-    )
+    limits = BatchLimits()
     try:
         validate_request_count(requests, limits)
         built = build_text_bodies(
@@ -420,11 +424,22 @@ async def submit_text(
         )
     except (BatchworkError, ValueError) as error:
         raise _usage(str(error)) from error
-    if len(built) > 10_000 and not options.allow_large_batch:
-        raise _usage(
-            "More than 10,000 requests requires explicit cost authorization with "
-            "--allow-large-batch."
+    if len(built) > LARGE_BATCH_REQUESTS and not options.allow_large_batch:
+        raise CliUsageError(
+            f"The batch contains {len(built)} requests, above the "
+            f"{LARGE_BATCH_REQUESTS} request soft limit; authorize it with "
+            "--allow-large-batch.",
+            code="large_batch_not_allowed",
         )
+
+    def validate_upload_size(size: int) -> None:
+        if size > LARGE_BATCH_UPLOAD_BYTES and not options.allow_large_batch:
+            raise CliUsageError(
+                f"The serialized provider upload is {size} bytes, above the "
+                f"{LARGE_BATCH_UPLOAD_BYTES} byte soft limit; authorize it with "
+                "--allow-large-batch.",
+                code="large_batch_not_allowed",
+            )
 
     submission_context = FailureContext(
         operation="submit",
@@ -434,17 +449,18 @@ async def submit_text(
     )
     _active_submission_context = submission_context
     try:
-        async with Batchwork() as client:
-            job = await client.batch(
-                model=spec,
-                requests=requests,
-                defaults=defaults,
-                metadata=_metadata(options.batch_metadata),
-                limits=limits,
-                api_key=route.api_key,
-                base_url=route.base_url,
-                headers=route.headers,
-            )
+        with serialized_upload_validation(validate_upload_size):
+            async with Batchwork() as client:
+                job = await client.batch(
+                    model=spec,
+                    requests=requests,
+                    defaults=defaults,
+                    metadata=_metadata(options.batch_metadata),
+                    limits=limits,
+                    api_key=route.api_key,
+                    base_url=route.base_url,
+                    headers=route.headers,
+                )
     except (InterruptionRequested, TerminationRequested) as error:
         _active_submission_context = None
         raise _unknown_submission_signal_failure(

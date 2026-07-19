@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 import pytest
 
+import batchwork.cli._input as input_module
 from batchwork.cli._input import load_text_requests
 
 
@@ -183,4 +184,18 @@ def test_load_text_requests_rejects_non_utf8(tmp_path: Path) -> None:
     source = _write_source(tmp_path, "requests.txt", b"\x96\n")
 
     with pytest.raises(click.UsageError, match="UTF-8"):
+        load_text_requests(source, None)
+
+
+def test_load_text_requests_stops_at_first_request_over_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _write_source(
+        tmp_path,
+        "requests.jsonl",
+        b'{"prompt":"one"}\n{"prompt":"two"}\n{"prompt":"unparsed","unknown":true}\n',
+    )
+    monkeypatch.setattr(input_module, "REQUESTS", 1)
+
+    with pytest.raises(click.UsageError, match="request limit at JSONL line 2"):
         load_text_requests(source, None)

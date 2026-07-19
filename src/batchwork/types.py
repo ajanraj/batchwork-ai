@@ -9,6 +9,7 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, JsonValue, model_validator
 
+from ._limits import REQUEST_BYTES, REQUESTS, UPLOAD_BYTES
 from .errors import UnsupportedProviderError
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -61,9 +62,9 @@ class ProviderCredentials(BatchworkModel):
 
 
 class BatchLimits(BatchworkModel):
-    max_requests: int = Field(default=50_000, ge=1)
-    max_request_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
-    max_upload_bytes: int = Field(default=200 * 1024 * 1024, ge=1)
+    max_requests: int = Field(default=REQUESTS, ge=1)
+    max_request_bytes: int = Field(default=REQUEST_BYTES, ge=1)
+    max_upload_bytes: int = Field(default=UPLOAD_BYTES, ge=1)
 
 
 class ProviderFileReference(BatchworkModel):

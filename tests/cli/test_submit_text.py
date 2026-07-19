@@ -546,6 +546,74 @@ def test_submit_text_rejects_large_batch_without_authorization_before_mutation(
     assert provider_requests == []
 
 
+def test_installed_large_batch_gate_prevents_provider_mutation(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text("".join(f'{{"prompt":"{index}"}}\n' for index in range(10_001)))
+
+    result = subprocess.run(
+        [
+            str(_installed_batchwork()),
+            "--json",
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--base-url",
+            base_url,
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "OPENAI_API_KEY": "secret", "NO_COLOR": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "large_batch_not_allowed"
+    assert "10001 requests" in error["message"]
+    assert provider_requests == []
+
+
+def test_serialized_upload_gate_prevents_provider_mutation(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"this payload crosses the test soft limit"}\n')
+    monkeypatch.setattr(submit_module, "LARGE_BATCH_UPLOAD_BYTES", 32)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--base-url",
+            base_url,
+        ],
+        env={"OPENAI_API_KEY": "secret"},
+    )
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "large_batch_not_allowed"
+    assert "32 byte soft limit" in error["message"]
+    assert provider_requests == []
+
+
 def test_submit_text_rejects_oversized_jsonl_line_before_provider_mutation(
     tmp_path: Path,
     fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
