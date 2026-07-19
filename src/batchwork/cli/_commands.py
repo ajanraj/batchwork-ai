@@ -15,7 +15,6 @@ import click
 from batchwork.types import BatchProvider, BatchResult
 
 from ._config import API_KEY_ENV, ConfigError, load_config, registry_path, select_profile
-from ._config import config_path as resolve_config_path
 from ._contract import (
     ConfigProviderView,
     ConfigValidationEnvelope,
@@ -756,10 +755,11 @@ def config() -> None:
 @click.pass_obj
 def config_path(root: RootOptions) -> None:
     """Show resolved configuration and registry paths."""
-    selected_config, _ = resolve_config_path(root.config)
+    loaded = load_config(root.config)
+    selected_config = loaded.path
     selected_registry = registry_path(root.registry)
     envelope = PathsEnvelope(
-        config=PathState(path=str(selected_config), exists=selected_config.is_file()),
+        config=PathState(path=str(selected_config), exists=loaded.exists),
         registry=PathState(path=str(selected_registry), exists=selected_registry.is_file()),
     )
     mode = _output_mode(root)

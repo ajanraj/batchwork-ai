@@ -35,6 +35,7 @@ def test_config_path_uses_independent_explicit_environment_and_default_precedenc
     explicit_registry = tmp_path / "explicit.sqlite3"
     environment_config = tmp_path / "environment.toml"
     environment_registry = tmp_path / "environment.sqlite3"
+    explicit_config.write_text("schema_version = 1\n")
 
     result = CliRunner().invoke(
         cli,
@@ -55,7 +56,7 @@ def test_config_path_uses_independent_explicit_environment_and_default_precedenc
 
     assert result.exit_code == 0, result.stderr
     document = json.loads(result.stdout)
-    assert document["config"] == {"path": str(explicit_config), "exists": False}
+    assert document["config"] == {"path": str(explicit_config), "exists": True}
     assert document["registry"] == {"path": str(explicit_registry), "exists": False}
 
 
@@ -74,10 +75,11 @@ def test_absent_default_config_is_valid(tmp_path: Path) -> None:
     assert document["credentials_read"] is False
 
 
-def test_explicit_missing_config_fails() -> None:
+@pytest.mark.parametrize("command", (("config", "path"), ("config", "validate")))
+def test_explicit_missing_config_fails(command: tuple[str, str]) -> None:
     result = CliRunner().invoke(
         cli,
-        ["--config", "missing.toml", "config", "validate"],
+        ["--config", "missing.toml", *command],
     )
 
     assert result.exit_code == 3
@@ -112,6 +114,11 @@ def test_machine_config_failure_uses_structured_configuration_error() -> None:
             "schema_version = 1\n[profiles.work.providers.openai]\n"
             "base_url = 'http://example.com/v1'\n",
             "absolute HTTPS",
+        ),
+        (
+            "schema_version = 1\n[profiles.work.providers.openai]\n"
+            "base_url = 'https://example.com:not-a-port/v1'\n",
+            "invalid port",
         ),
         (
             "schema_version = 1\n[profiles.work.providers.openai.headers]\n"
