@@ -40,7 +40,6 @@ from ._registry import (
     get_job,
     is_job_name,
     update_job,
-    update_job_profile,
 )
 from ._state import OutputMode, RootOptions
 from ._submit_text import (
@@ -170,7 +169,25 @@ def resolve_job(root: RootOptions, options: LifecycleOptions) -> ResolvedJob:
             "Direct routing options require provider:provider-job-id or --provider."
         )
     selected_registry_path = registry_path(root.registry)
-    record = get_job(selected_registry_path, options.job)
+    try:
+        record = get_job(selected_registry_path, options.job)
+    except (OSError, sqlite3.Error) as error:
+        raise LifecycleFailure(
+            ErrorEnvelope(
+                error=ErrorDetail(
+                    code="registry_read_failed",
+                    category="local_state",
+                    message=(
+                        f"Could not read local registry: {error}. No provider operation was "
+                        "attempted; check registry integrity or use a direct provider reference."
+                    ),
+                    exit_code=8,
+                    retryable=False,
+                    operation="resolve",
+                    registry_path=str(selected_registry_path),
+                )
+            )
+        ) from error
     if record is None:
         raise click.UsageError(
             f'Local JOB "{options.job}" was not found; use provider:provider-job-id or '
@@ -232,16 +249,13 @@ def _persist(resolved: ResolvedJob, snapshot: BatchSnapshot) -> None:
             resolved.record.job.record_id,
             snapshot,
             datetime.now(UTC),
+            profile=(
+                resolved.selected_profile
+                if resolved.selected_profile is not None
+                and resolved.record.job.profile != resolved.selected_profile
+                else None
+            ),
         )
-        if (
-            resolved.selected_profile is not None
-            and resolved.record.job.profile != resolved.selected_profile
-        ):
-            update_job_profile(
-                resolved.registry_path,
-                resolved.record.job.record_id,
-                resolved.selected_profile,
-            )
 
 
 def _recovery_command(operation: str, resolved: ResolvedJob) -> list[str]:
@@ -257,6 +271,44 @@ def _recovery_command(operation: str, resolved: ResolvedJob) -> list[str]:
     for name, variable in sorted(route.header_env.items()):
         command.extend(["--header-env", f"{name}={variable}"])
     return command
+
+
+def _persist_or_fail(operation: str, resolved: ResolvedJob, snapshot: BatchSnapshot) -> None:
+    try:
+        _persist(resolved, snapshot)
+    except (OSError, sqlite3.Error) as error:
+        provider_reference = f"{resolved.provider.value}:{resolved.provider_job_id}"
+        direct = ResolvedJob(
+            provider_reference,
+            resolved.provider,
+            resolved.provider_job_id,
+            resolved.route,
+        )
+        raise LifecycleFailure(
+            ErrorEnvelope(
+                error=ErrorDetail(
+                    code="registry_write_failed",
+                    category="local_state",
+                    message=(
+                        "The provider operation succeeded, but Batchwork could not update the "
+                        "registry. The remote job is unchanged."
+                    ),
+                    exit_code=8,
+                    retryable=False,
+                    operation=operation,
+                    provider=resolved.provider,
+                    job=provider_reference,
+                    routing_fingerprint=resolved.route.registry.fingerprint,
+                    registry_path=(
+                        str(resolved.registry_path) if resolved.registry_path is not None else None
+                    ),
+                    recovery=Recovery(
+                        action="resume_with_direct_reference",
+                        command=_recovery_command(operation, direct),
+                    ),
+                )
+            )
+        ) from error
 
 
 def _adopt_if_requested(
@@ -327,7 +379,7 @@ async def status_job(root: RootOptions, options: LifecycleOptions) -> LifecycleR
     resolved = resolve_job(root, options)
     async with Batchwork() as client:
         job = await client.get_batch(_ref(resolved))
-    _persist(resolved, job.snapshot)
+    _persist_or_fail("status", resolved, job.snapshot)
     resolved = _adopt_if_requested(root, options, resolved, job.snapshot)
     return LifecycleResult(resolved, job.snapshot)
 
@@ -346,7 +398,7 @@ async def wait_job(
             async with Batchwork() as client:
                 job = await client.get_batch(_ref(resolved))
                 snapshot = job.snapshot
-                _persist(resolved, snapshot)
+                _persist_or_fail("wait", resolved, snapshot)
                 while not is_terminal_status(snapshot.status):
                     if timeout_seconds is None:
                         sleep_for = poll_interval
@@ -355,7 +407,7 @@ async def wait_job(
                         sleep_for = min(poll_interval, max(0.0, remaining))
                     await asyncio.sleep(sleep_for)
                     snapshot = await job.poll()
-                    _persist(resolved, snapshot)
+                    _persist_or_fail("wait", resolved, snapshot)
     except TimeoutError:
         raise LifecycleFailure(
             ErrorEnvelope(
@@ -416,7 +468,7 @@ async def results_job(
     resolved = resolve_job(root, options)
     async with Batchwork() as client:
         job = await client.get_batch(_ref(resolved))
-        _persist(resolved, job.snapshot)
+        _persist_or_fail("results", resolved, job.snapshot)
         if not is_terminal_status(job.status):
             raise _nonterminal_failure(resolved, job.snapshot)
         results: list[BatchResult] | None = [] if on_result is None else None
@@ -441,7 +493,7 @@ async def cancel_job(root: RootOptions, options: LifecycleOptions) -> LifecycleR
             snapshot = await job.cancel()
         else:
             snapshot = job.snapshot
-    _persist(resolved, snapshot)
+    _persist_or_fail("cancel", resolved, snapshot)
     resolved = _adopt_if_requested(root, options, resolved, snapshot)
     return LifecycleResult(resolved, snapshot)
 

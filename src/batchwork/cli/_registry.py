@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -29,34 +31,74 @@ _TERMINAL_STATUS_VALUES = tuple(
     status.value for status in BatchStatus if is_terminal_status(status)
 )
 _TERMINAL_STATUS_PLACEHOLDERS = ", ".join("?" for _ in _TERMINAL_STATUS_VALUES)
+_PROVIDER_CONSTRAINT_VALUES = ", ".join(repr(provider.value) for provider in BatchProvider)
+_STATUS_CONSTRAINT_VALUES = ", ".join(repr(status.value) for status in BatchStatus)
+CURRENT_SCHEMA_VERSION = 2
+BUSY_TIMEOUT_MILLISECONDS = 5_000
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS jobs (
-    record_id TEXT PRIMARY KEY,
-    name TEXT UNIQUE,
-    provider TEXT NOT NULL,
-    provider_job_id TEXT NOT NULL,
-    provider_reference TEXT NOT NULL,
-    routing_fingerprint TEXT NOT NULL,
-    api_key_env TEXT NOT NULL,
+SCHEMA = f"""
+CREATE TABLE jobs (
+    record_id TEXT PRIMARY KEY
+        CHECK (
+            length(record_id) = 35
+            AND substr(record_id, 1, 3) = 'bw_'
+            AND substr(record_id, 4) NOT GLOB '*[^0-9a-f]*'
+        ),
+    name TEXT UNIQUE
+        CHECK (
+            name IS NULL
+            OR (
+                length(name) BETWEEN 1 AND 64
+                AND substr(name, 1, 1) NOT GLOB '[^A-Za-z0-9]'
+                AND name NOT GLOB '*[^A-Za-z0-9._-]*'
+                AND NOT (
+                    length(name) = 35
+                    AND substr(name, 1, 3) = 'bw_'
+                    AND substr(name, 4) NOT GLOB '*[^0-9a-f]*'
+                )
+            )
+        ),
+    provider TEXT NOT NULL CHECK (
+        provider IN ({_PROVIDER_CONSTRAINT_VALUES})
+    ),
+    provider_job_id TEXT NOT NULL CHECK (length(provider_job_id) > 0),
+    provider_reference TEXT NOT NULL
+        CHECK (provider_reference = provider || ':' || provider_job_id),
+    routing_fingerprint TEXT NOT NULL
+        CHECK (
+            length(routing_fingerprint) = 64
+            AND routing_fingerprint NOT GLOB '*[^0-9a-f]*'
+        ),
+    api_key_env TEXT NOT NULL CHECK (length(api_key_env) > 0),
     base_url TEXT,
     headers_json TEXT NOT NULL,
     header_env_json TEXT NOT NULL,
-    modality TEXT,
+    modality TEXT CHECK (modality IS NULL OR modality IN ('text', 'embeddings', 'images')),
     model TEXT,
     profile TEXT,
-    status TEXT NOT NULL,
-    request_total INTEGER NOT NULL,
-    request_completed INTEGER NOT NULL,
-    request_failed INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ({_STATUS_CONSTRAINT_VALUES})
+    ),
+    request_total INTEGER NOT NULL CHECK (request_total >= 0),
+    request_completed INTEGER NOT NULL CHECK (request_completed >= 0),
+    request_failed INTEGER NOT NULL CHECK (request_failed >= 0),
     registered_at TEXT NOT NULL,
     provider_created_at TEXT,
     completed_at TEXT,
     expires_at TEXT,
     terminal_at TEXT,
     last_refreshed_at TEXT,
-    UNIQUE (provider, provider_job_id, routing_fingerprint)
+    UNIQUE (provider, provider_job_id, routing_fingerprint),
+    CHECK (request_completed + request_failed <= request_total)
 )
+"""
+
+_V1_COLUMNS = """
+record_id, name, provider, provider_job_id, provider_reference,
+routing_fingerprint, api_key_env, base_url, headers_json, header_env_json,
+modality, model, profile, status, request_total, request_completed,
+request_failed, registered_at, provider_created_at, completed_at, expires_at,
+terminal_at, last_refreshed_at
 """
 
 _INSERT_JOB = """
@@ -85,7 +127,28 @@ class RegistryJob:
     route: RegistryRoute
 
 
+@dataclass(frozen=True, slots=True)
+class RegistryCheckResult:
+    ok: bool
+    user_version: int
+    integrity: str
+
+
+@dataclass(frozen=True, slots=True)
+class RegistryResetResult:
+    backup_path: Path | None
+    records_count: int | None
+
+
 class RegistryNameConflict(sqlite3.IntegrityError):
+    pass
+
+
+class RegistrySchemaError(sqlite3.DatabaseError):
+    pass
+
+
+class RegistryIntegrityError(sqlite3.DatabaseError):
     pass
 
 
@@ -120,6 +183,183 @@ def _enable_wal(connection: sqlite3.Connection) -> None:
             if time.monotonic() >= deadline:
                 raise
             time.sleep(0.01)
+
+
+@contextmanager
+def _process_lock(path: Path, *, exclusive: bool, create_lock_file: bool = True) -> Iterator[None]:
+    deadline = time.monotonic() + BUSY_TIMEOUT_MILLISECONDS / 1_000
+    if os.name == "posix":
+        import fcntl
+
+        descriptor = os.open(path.parent, os.O_RDONLY)
+        operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        while True:
+            try:
+                fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(descriptor)
+                    raise TimeoutError("timed out waiting for the registry process lock") from None
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+        return
+
+    import msvcrt
+
+    lock_path = Path(f"{path}.lock")
+    if not create_lock_file and (not lock_path.exists() or lock_path.stat().st_size == 0):
+        yield
+        return
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    if os.fstat(descriptor).st_size == 0:
+        os.write(descriptor, b"\0")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while True:
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                os.close(descriptor)
+                raise TimeoutError("timed out waiting for the registry process lock") from None
+            time.sleep(0.01)
+    try:
+        yield
+    finally:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        os.close(descriptor)
+
+
+def _integrity(connection: sqlite3.Connection, pragma: str) -> str:
+    rows = connection.execute(f"PRAGMA {pragma}").fetchall()
+    messages = [str(row[0]) for row in rows if row]
+    return "ok" if messages == ["ok"] else "; ".join(messages) or "no result"
+
+
+def _user_version(connection: sqlite3.Connection) -> int:
+    row = connection.execute("PRAGMA user_version").fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def _migration_backup(path: Path, version: int) -> Path:
+    backup = path.with_name(f"{path.name}.migration-v{version}-{uuid4().hex}.sqlite3")
+    source = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MILLISECONDS / 1_000)
+    destination = sqlite3.connect(backup)
+    try:
+        source.backup(destination)
+    except BaseException:
+        source.close()
+        destination.close()
+        backup.unlink(missing_ok=True)
+        raise
+    source.close()
+    destination.close()
+    if os.name == "posix":
+        backup.chmod(0o600)
+    return backup
+
+
+def _migrate_v1_to_v2(path: Path, connection: sqlite3.Connection) -> None:
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        version = _user_version(connection)
+        if version == CURRENT_SCHEMA_VERSION:
+            connection.commit()
+            return
+        if version != 1:
+            raise RegistrySchemaError(f"registry changed to schema {version} during migration")
+        existing_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+        for name in ("completed_at", "expires_at", "terminal_at", "last_refreshed_at"):
+            if name not in existing_columns:
+                connection.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
+        connection.execute("ALTER TABLE jobs RENAME TO jobs_v1")
+        connection.execute(SCHEMA)
+        connection.execute(f"INSERT INTO jobs ({_V1_COLUMNS}) SELECT {_V1_COLUMNS} FROM jobs_v1")
+        connection.execute("DROP TABLE jobs_v1")
+        connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
+    except BaseException:
+        connection.rollback()
+        raise
+    connection.commit()
+
+
+def _initialize(connection: sqlite3.Connection) -> None:
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        version = _user_version(connection)
+        has_jobs = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'"
+        ).fetchone()
+        if version == CURRENT_SCHEMA_VERSION and has_jobs is not None:
+            connection.commit()
+            return
+        if version != 0 or has_jobs is not None:
+            raise RegistrySchemaError("registry changed while it was being initialized")
+        connection.execute(SCHEMA)
+        connection.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
+    except BaseException:
+        connection.rollback()
+        raise
+    connection.commit()
+
+
+@contextmanager
+def _open_registry_unlocked(path: Path, *, create: bool) -> Iterator[sqlite3.Connection]:
+    existed = path.exists()
+    if not existed and not create:
+        raise FileNotFoundError(path)
+    if create:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MILLISECONDS / 1_000)
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MILLISECONDS}")
+        version = _user_version(connection)
+        if version > CURRENT_SCHEMA_VERSION:
+            raise RegistrySchemaError(
+                f"registry schema {version} is newer than supported schema {CURRENT_SCHEMA_VERSION}"
+            )
+        integrity = _integrity(connection, "quick_check")
+        if integrity != "ok":
+            raise RegistryIntegrityError(f"registry integrity check failed: {integrity}")
+        has_jobs = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'"
+        ).fetchone()
+        if version == 0:
+            if has_jobs is not None:
+                raise RegistrySchemaError("unversioned registry schema is unsupported")
+            _initialize(connection)
+        elif version == 1:
+            _migration_backup(path, version)
+            _migrate_v1_to_v2(path, connection)
+        elif has_jobs is None:
+            raise RegistrySchemaError("registry jobs table is missing")
+        _enable_wal(connection)
+        if os.name == "posix":
+            path.chmod(0o600)
+        try:
+            yield connection
+        except BaseException:
+            connection.rollback()
+            raise
+        connection.commit()
+    finally:
+        connection.close()
+
+
+@contextmanager
+def _open_registry(path: Path, *, create: bool) -> Iterator[sqlite3.Connection]:
+    if create:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with _process_lock(path, exclusive=False):
+        with _open_registry_unlocked(path, create=create) as connection:
+            yield connection
 
 
 def _job_values(
@@ -173,17 +413,10 @@ def insert_job(
 ) -> Job:
     if name is not None and not is_job_name(name):
         raise ValueError("name must be shell-safe and cannot match a record ID")
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     record_id = f"bw_{uuid4().hex}"
     provider_reference = f"{snapshot.provider.value}:{snapshot.id}"
     counts = snapshot.request_counts
-    with sqlite3.connect(path, timeout=5) as connection:
-        if os.name == "posix":
-            path.chmod(0o600)
-        connection.execute("PRAGMA busy_timeout = 5000")
-        _enable_wal(connection)
-        connection.execute(SCHEMA)
-        connection.execute("PRAGMA user_version = 1")
+    with _open_registry(path, create=True) as connection:
         try:
             connection.execute(
                 _INSERT_JOB,
@@ -231,16 +464,7 @@ def adopt_job(
 ) -> RegistryJob:
     if name is not None and not is_job_name(name):
         raise ValueError("name must be shell-safe and cannot match a record ID")
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with sqlite3.connect(path, timeout=5) as connection:
-        if os.name == "posix":
-            path.chmod(0o600)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
-        _enable_wal(connection)
-        connection.execute(SCHEMA)
-        _ensure_columns(connection)
-        connection.execute("PRAGMA user_version = 1")
+    with _open_registry(path, create=True) as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             """
@@ -357,32 +581,30 @@ def _registry_job(row: sqlite3.Row) -> RegistryJob:
     return RegistryJob(job, route)
 
 
-def _ensure_columns(connection: sqlite3.Connection) -> None:
-    existing = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
-    for name in ("completed_at", "expires_at", "terminal_at", "last_refreshed_at"):
-        if name not in existing:
-            connection.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
-
-
 def get_job(path: Path, selector: str) -> RegistryJob | None:
     if not path.is_file():
         return None
-    with sqlite3.connect(path, timeout=5) as connection:
-        connection.row_factory = sqlite3.Row
-        _ensure_columns(connection)
+    with _open_registry(path, create=False) as connection:
         column = "record_id" if _RECORD_ID.fullmatch(selector) else "name"
         row = connection.execute(f"SELECT * FROM jobs WHERE {column} = ?", (selector,)).fetchone()
     return _registry_job(row) if row is not None else None
 
 
-def update_job(path: Path, record_id: str, snapshot: BatchSnapshot, refreshed_at: datetime) -> None:
+def update_job(
+    path: Path,
+    record_id: str,
+    snapshot: BatchSnapshot,
+    refreshed_at: datetime,
+    *,
+    profile: str | None = None,
+) -> None:
     terminal = is_terminal_status(snapshot.status)
     counts = snapshot.request_counts
-    with sqlite3.connect(path, timeout=5) as connection:
-        _ensure_columns(connection)
+    with _open_registry(path, create=False) as connection:
         connection.execute(
             f"""
-            UPDATE jobs SET status = ?, request_total = ?, request_completed = ?,
+            UPDATE jobs SET profile = COALESCE(?, profile), status = ?,
+                request_total = ?, request_completed = ?,
                 request_failed = ?, completed_at = ?, expires_at = ?,
                 terminal_at = COALESCE(terminal_at, ?), last_refreshed_at = ?
             WHERE record_id = ?
@@ -392,6 +614,7 @@ def update_job(path: Path, record_id: str, snapshot: BatchSnapshot, refreshed_at
                 )
             """,
             (
+                profile,
                 snapshot.status.value,
                 counts.total,
                 counts.completed,
@@ -405,11 +628,6 @@ def update_job(path: Path, record_id: str, snapshot: BatchSnapshot, refreshed_at
                 terminal,
             ),
         )
-
-
-def update_job_profile(path: Path, record_id: str, profile: str) -> None:
-    with sqlite3.connect(path, timeout=5) as connection:
-        connection.execute("UPDATE jobs SET profile = ? WHERE record_id = ?", (profile, record_id))
 
 
 def list_registry_jobs(
@@ -442,9 +660,7 @@ def list_registry_jobs(
     limit_clause = " LIMIT ?" if limit is not None else ""
     if limit is not None:
         parameters.append(limit)
-    with sqlite3.connect(path, timeout=5) as connection:
-        connection.row_factory = sqlite3.Row
-        _ensure_columns(connection)
+    with _open_registry(path, create=False) as connection:
         rows = connection.execute(
             f"SELECT * FROM jobs{where} ORDER BY registered_at DESC, record_id ASC{limit_clause}",
             parameters,
@@ -455,10 +671,7 @@ def list_registry_jobs(
 def forget_job(path: Path, selector: str) -> RegistryJob | None:
     if not path.is_file():
         return None
-    with sqlite3.connect(path, timeout=5) as connection:
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
-        _ensure_columns(connection)
+    with _open_registry(path, create=False) as connection:
         connection.execute("BEGIN IMMEDIATE")
         column = "record_id" if is_record_id(selector) else "name"
         row = connection.execute(f"SELECT * FROM jobs WHERE {column} = ?", (selector,)).fetchone()
@@ -473,9 +686,7 @@ def prune_jobs(path: Path, cutoff_at: datetime, *, commit: bool) -> int:
         return 0
     predicate = f"status IN ({_TERMINAL_STATUS_PLACEHOLDERS}) AND terminal_at < ?"
     parameters = (*_TERMINAL_STATUS_VALUES, cutoff_at.isoformat())
-    with sqlite3.connect(path, timeout=5) as connection:
-        connection.execute("PRAGMA busy_timeout = 5000")
-        _ensure_columns(connection)
+    with _open_registry(path, create=False) as connection:
         if not commit:
             row = connection.execute(
                 f"SELECT COUNT(*) FROM jobs WHERE {predicate}", parameters
@@ -484,3 +695,98 @@ def prune_jobs(path: Path, cutoff_at: datetime, *, commit: bool) -> int:
         connection.execute("BEGIN IMMEDIATE")
         cursor = connection.execute(f"DELETE FROM jobs WHERE {predicate}", parameters)
         return cursor.rowcount
+
+
+def _check_registry_unlocked(path: Path) -> RegistryCheckResult:
+    with sqlite3.connect(path, timeout=BUSY_TIMEOUT_MILLISECONDS / 1_000) as connection:
+        connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MILLISECONDS}")
+        version = _user_version(connection)
+        if version > CURRENT_SCHEMA_VERSION:
+            return RegistryCheckResult(False, version, "unsupported_schema")
+        integrity = _integrity(connection, "integrity_check")
+        if integrity != "ok":
+            return RegistryCheckResult(False, version, integrity)
+        has_jobs = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'"
+        ).fetchone()
+        if version == 0 and has_jobs is not None:
+            return RegistryCheckResult(False, version, "unsupported_schema")
+        if version > 0 and has_jobs is None:
+            return RegistryCheckResult(False, version, "schema_missing")
+    return RegistryCheckResult(True, version, integrity)
+
+
+def check_registry(path: Path) -> RegistryCheckResult:
+    if not path.exists():
+        return RegistryCheckResult(ok=True, user_version=0, integrity="missing")
+    try:
+        with _process_lock(path, exclusive=False, create_lock_file=False):
+            return _check_registry_unlocked(path)
+    except (OSError, sqlite3.Error) as error:
+        return RegistryCheckResult(False, 0, f"open_failed: {error}")
+
+
+def _recovery_members(path: Path) -> tuple[Path, ...]:
+    candidates = (path, Path(f"{path}-wal"), Path(f"{path}-shm"))
+    return tuple(candidate for candidate in candidates if candidate.exists())
+
+
+def _preserve_recovery_set(path: Path) -> Path | None:
+    members = _recovery_members(path)
+    if not members:
+        return None
+    recovery = path.with_name(f"{path.name}.recovery-{uuid4().hex}")
+    recovery.mkdir(mode=0o700)
+    copied: list[Path] = []
+    try:
+        for source in members:
+            destination = recovery / source.name
+            shutil.copy2(source, destination)
+            copied.append(destination)
+    except BaseException as error:
+        cleanup_errors: list[str] = []
+        for destination in reversed(copied):
+            try:
+                destination.unlink()
+            except OSError as cleanup_error:
+                cleanup_errors.append(str(cleanup_error))
+        if not cleanup_errors:
+            recovery.rmdir()
+        detail = f"; cleanup failed: {'; '.join(cleanup_errors)}" if cleanup_errors else ""
+        raise OSError(f"could not preserve registry recovery set: {error}{detail}") from error
+    return recovery
+
+
+def _discard_recovery_set(path: Path) -> None:
+    for member in path.iterdir():
+        member.unlink()
+    path.rmdir()
+
+
+def reset_registry(path: Path) -> RegistryResetResult:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with _process_lock(path, exclusive=True):
+        backup_path = _preserve_recovery_set(path)
+        try:
+            if path.exists():
+                connection = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MILLISECONDS / 1_000)
+                try:
+                    connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MILLISECONDS}")
+                    try:
+                        connection.execute("BEGIN IMMEDIATE")
+                    except sqlite3.Error as error:
+                        if error.sqlite_errorcode in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                            raise
+                    else:
+                        connection.rollback()
+                finally:
+                    connection.close()
+        except BaseException:
+            if backup_path is not None:
+                _discard_recovery_set(backup_path)
+            raise
+        for member in _recovery_members(path):
+            member.unlink()
+        with _open_registry_unlocked(path, create=True):
+            pass
+    return RegistryResetResult(backup_path, None)

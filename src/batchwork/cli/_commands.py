@@ -28,6 +28,7 @@ from ._contract import (
     PathsEnvelope,
     PathState,
     RegistryChangeEnvelope,
+    RegistryCheckEnvelope,
     RegistryPrunePlanEnvelope,
     ResultEnvelope,
     RunEnvelope,
@@ -51,11 +52,14 @@ from ._lifecycle import (
     wait_job,
 )
 from ._registry import (
+    CURRENT_SCHEMA_VERSION,
+    check_registry,
     forget_job,
     is_job_name,
     is_record_id,
     list_registry_jobs,
     prune_jobs,
+    reset_registry,
 )
 from ._state import OutputMode, RootOptions
 from ._submit_text import SubmissionResult, SubmitTextOptions, render_error, render_job
@@ -1014,13 +1018,61 @@ def registry() -> None:
 
 
 @registry.command("check")
-def registry_check() -> None:
+@click.pass_obj
+def registry_check(root: RootOptions) -> None:
     """Check registry schema and integrity."""
-    _foundation_only()
+    selected_registry = registry_path(root.registry)
+    report = check_registry(selected_registry)
+    envelope = RegistryCheckEnvelope(
+        path=str(selected_registry),
+        ok=report.ok,
+        user_version=report.user_version,
+        integrity=report.integrity,
+    )
+    mode = _output_mode(root)
+    if mode in {OutputMode.JSON, OutputMode.JSONL}:
+        click.echo(serialize_envelope(envelope), nl=False)
+    else:
+        state = "ok" if report.ok else "failed"
+        click.echo(
+            f"Registry: {selected_registry}\nSchema: {report.user_version}\n"
+            f"Integrity: {report.integrity} ({state})"
+        )
+    if not report.ok:
+        raise click.exceptions.Exit(8)
 
 
 @registry.command("reset")
 @click.option("--backup", is_flag=True, required=True)
-def registry_reset(**_: object) -> None:
+@click.pass_obj
+def registry_reset(root: RootOptions, **_: object) -> None:
     """Back up the registry recovery set, then create a fresh registry."""
-    _foundation_only()
+    selected_registry = registry_path(root.registry)
+    try:
+        result = reset_registry(selected_registry)
+    except (OSError, sqlite3.Error) as error:
+        _fail_local_state(
+            root,
+            code="registry_reset_failed",
+            message=(
+                f"Could not preserve and reset the local registry: {error}. "
+                "No remote jobs were changed; inspect the registry path and recovery files."
+            ),
+            operation="registry_reset",
+            path=selected_registry,
+        )
+        return
+    envelope = RegistryChangeEnvelope(
+        operation="reset",
+        path=str(selected_registry),
+        changed_records=result.records_count,
+        backup_path=str(result.backup_path) if result.backup_path is not None else None,
+        records_count_known=result.records_count is not None,
+        user_version=CURRENT_SCHEMA_VERSION,
+    )
+    mode = _output_mode(root)
+    if mode in {OutputMode.JSON, OutputMode.JSONL}:
+        click.echo(serialize_envelope(envelope), nl=False)
+    else:
+        backup = str(result.backup_path) if result.backup_path is not None else "not needed"
+        click.echo(f"Registry reset: {selected_registry}\nRecovery set: {backup}")
