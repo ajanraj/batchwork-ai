@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import json
 import socket
+import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import ClassVar
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
 import batchwork.cli._commands as commands_module
 from batchwork._provider_failure import ProviderFailure, ProviderFailureError, ProviderFailureKind
 from batchwork.cli._commands import cli
-from batchwork.cli._lifecycle import _retry_delay
+from batchwork.cli._lifecycle import _retry_delay, _retryable_read_failure
 
 
 class _FailureHandler(BaseHTTPRequestHandler):
@@ -60,6 +62,26 @@ def test_retry_after_is_capped_at_sixty_seconds() -> None:
     )
 
     assert _retry_delay(error, 0) == 60
+
+
+@pytest.mark.parametrize(
+    "cause",
+    (httpx.RemoteProtocolError("invalid response"), httpx.ReadError("tls", request=None)),
+)
+def test_protocol_and_tls_failures_are_not_safe_read_retries(cause: httpx.HTTPError) -> None:
+    if isinstance(cause, httpx.ReadError):
+        cause.__cause__ = ssl.SSLError("TLS validation failed")
+    error = ProviderFailureError("safe", ProviderFailure(ProviderFailureKind.TRANSPORT))
+    error.__cause__ = cause
+
+    assert _retryable_read_failure(error) is False
+
+
+def test_transient_read_failure_is_safe_to_retry() -> None:
+    error = ProviderFailureError("safe", ProviderFailure(ProviderFailureKind.TRANSPORT))
+    error.__cause__ = httpx.ReadError("connection reset")
+
+    assert _retryable_read_failure(error) is True
 
 
 @pytest.fixture

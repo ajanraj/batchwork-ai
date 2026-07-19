@@ -374,7 +374,7 @@ def test_buffered_json_result_failure_keeps_stdout_empty(
     assert error["code"] == "result_stream_failed"
     assert "partial_output" not in error
     assert "records_emitted" not in error
-    assert handler.requests.count(("GET", "/v1/files/file-output/content")) == 3
+    assert handler.requests.count(("GET", "/v1/files/file-output/content")) == 1
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
