@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -13,7 +15,7 @@ from .body import (
     build_text_bodies,
     validate_request_count,
 )
-from .errors import BatchClosedError, BatchworkError
+from .errors import BatchClosedError, BatchworkError, _LimitExceededError
 from .job import BatchJob
 from .media import DefaultMediaResolver, MediaResolver, MediaSource, ResolvedMedia
 from .providers.adapter import BatchAdapter
@@ -62,6 +64,19 @@ _API_KEY_ENV = {
 
 class _RemoteMediaDeferred(Exception):
     pass
+
+
+@dataclass(slots=True)
+class _MediaBudget:
+    maximum: int
+    consumed: int = 0
+
+    def add(self, size: int) -> None:
+        self.consumed += size
+        if self.consumed > self.maximum:
+            raise _LimitExceededError(
+                f"batchwork: aggregate decoded media exceeds the {self.maximum} byte limit"
+            )
 
 
 _BASE_URL_ENV = {
@@ -188,6 +203,33 @@ class Batchwork:
         base_url: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> BatchJob:
+        return await self._submit_text_batch(
+            model=model,
+            requests=requests,
+            defaults=defaults,
+            metadata=metadata,
+            limits=limits,
+            credentials=credentials,
+            api_key=api_key,
+            base_url=base_url,
+            headers=headers,
+            validate_upload=None,
+        )
+
+    async def _submit_text_batch(
+        self,
+        *,
+        model: str | ModelSpec,
+        requests: Sequence[BatchRequest],
+        defaults: BatchDefaults | None = None,
+        metadata: Mapping[str, str] | None = None,
+        limits: BatchLimits | None = None,
+        credentials: ProviderCredentials | Mapping[str, object] | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        headers: Mapping[str, str] | None = None,
+        validate_upload: Callable[[int], None] | None,
+    ) -> BatchJob:
         spec = resolve_model(model)
         self._validate_requests(requests)
         limits = limits or BatchLimits()
@@ -195,12 +237,22 @@ class Batchwork:
         adapter, resolved_credentials = self._adapter_and_credentials(
             spec.provider, credentials, api_key=api_key, base_url=base_url, headers=headers
         )
+        media_budget = _MediaBudget(limits.max_upload_bytes)
         locally_prepared = await self._resolve_request_media(
             spec,
             requests,
             limits,
             resolved_credentials.base_url,
             remote=False,
+            budget=media_budget,
+        )
+        build_text_bodies(
+            spec.provider,
+            spec.model_id,
+            locally_prepared,
+            defaults,
+            limits,
+            kind=spec.kind,
         )
         prepared = await self._resolve_request_media(
             spec,
@@ -208,18 +260,30 @@ class Batchwork:
             limits,
             resolved_credentials.base_url,
             remote=True,
+            budget=media_budget,
         )
         built = build_text_bodies(
             spec.provider, spec.model_id, prepared, defaults, limits, kind=spec.kind
         )
-        snapshot = await adapter.submit(
-            built=built,
-            credentials=resolved_credentials,
-            endpoint=built[0].endpoint,
-            limits=limits,
-            metadata=metadata,
-            model_id=spec.model_id,
-        )
+        if validate_upload is None:
+            snapshot = await adapter.submit(
+                built=built,
+                credentials=resolved_credentials,
+                endpoint=built[0].endpoint,
+                limits=limits,
+                metadata=metadata,
+                model_id=spec.model_id,
+            )
+        else:
+            snapshot = await adapter.submit(
+                built=built,
+                credentials=resolved_credentials,
+                endpoint=built[0].endpoint,
+                limits=limits,
+                metadata=metadata,
+                model_id=spec.model_id,
+                validate_upload=validate_upload,
+            )
         return BatchJob(adapter, resolved_credentials, snapshot, ensure_open=self._ensure_open)
 
     async def batch_embeddings(
@@ -331,25 +395,20 @@ class Batchwork:
         base_url: str | None,
         *,
         remote: bool = True,
+        budget: _MediaBudget | None = None,
     ) -> list[BatchRequest]:
         prepared: list[BatchRequest] = []
-        materialized_bytes = 0
+        selected_budget = budget or _MediaBudget(limits.max_upload_bytes)
 
         async def resolve(source: MediaSource, media_type: str | None) -> ResolvedMedia:
-            nonlocal materialized_bytes
-            if not remote and str(source).startswith("https://"):
+            if not remote and urlsplit(str(source)).scheme.lower() == "https":
                 raise _RemoteMediaDeferred
             resolved = await self._media_resolver.resolve(
                 source,
                 media_type=media_type,
                 max_bytes=limits.max_request_bytes,
             )
-            materialized_bytes += len(resolved.data)
-            if materialized_bytes > limits.max_upload_bytes:
-                raise BatchworkError(
-                    "batchwork: aggregate decoded media exceeds the "
-                    f"{limits.max_upload_bytes} byte limit"
-                )
+            selected_budget.add(len(resolved.data))
             return resolved
 
         for request in requests:
@@ -381,6 +440,9 @@ class Batchwork:
                                 isinstance(source, TaggedFileDataText)
                                 and spec.provider is not BatchProvider.TOGETHER
                             ):
+                                output_parts.append(output_part)
+                                continue
+                            elif remote and isinstance(source, TaggedFileDataData):
                                 output_parts.append(output_part)
                                 continue
                             else:
@@ -419,6 +481,9 @@ class Batchwork:
                 for part in message.content:
                     if isinstance(part, ImagePart):
                         source = part.image
+                        if remote and isinstance(source, bytes):
+                            parts.append(part)
+                            continue
                         if self._may_pass_media_url(
                             spec,
                             source,
@@ -439,6 +504,9 @@ class Batchwork:
                         )
                     elif isinstance(part, (FilePart, ReasoningFilePart)):
                         source = part.data
+                        if remote and isinstance(source, bytes):
+                            parts.append(part)
+                            continue
                         if isinstance(source, TaggedFileDataUrl):
                             source = source.url
                         elif isinstance(source, TaggedFileDataReference):

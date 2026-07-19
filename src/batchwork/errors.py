@@ -7,6 +7,10 @@ class BatchworkError(Exception):
     """Base class for all package errors."""
 
 
+class _LimitExceededError(BatchworkError):
+    """An internal, locally decidable hard safety bound was exceeded."""
+
+
 class BatchStateError(BatchworkError):
     """The requested operation is invalid for the batch's current state."""
 
@@ -45,3 +49,7 @@ class MissingDependencyError(BatchworkError):
 
 class MediaResolutionError(BatchworkError):
     """Remote or inline media could not be resolved safely."""
+
+
+class _MediaLimitExceededError(MediaResolutionError, _LimitExceededError):
+    """Media resolution crossed a locally enforced byte boundary."""

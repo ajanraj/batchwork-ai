@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 
 import httpx
 
@@ -85,6 +85,7 @@ class MistralAdapter:
         model_id: str,
         metadata: Mapping[str, str] | None = None,
         limits: BatchLimits | None = None,
+        validate_upload: Callable[[int], None] | None = None,
     ) -> BatchSnapshot:
         lines = []
         for item in built:
@@ -92,7 +93,7 @@ class MistralAdapter:
                 key: value for key, value in item.body.items() if key not in {"model", "stream"}
             }
             lines.append({"custom_id": item.custom_id, "body": body})
-        payload = encode_jsonl(lines, limits)
+        payload = encode_jsonl(lines, limits, validate_upload=validate_upload)
         url = self._base(credentials)
         headers = self._headers(credentials)
         file_id = await upload_file(self._client, url, headers, payload)

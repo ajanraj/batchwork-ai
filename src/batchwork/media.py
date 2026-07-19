@@ -22,7 +22,7 @@ from ._network import (
     resolve_public_addresses,
     validate_public_address,
 )
-from .errors import MediaResolutionError
+from .errors import MediaResolutionError, _MediaLimitExceededError
 from .types import (
     MediaSource,
     ProviderFileReference,
@@ -325,13 +325,13 @@ def _decode_inline(value: str, max_bytes: int) -> tuple[bytes, str | None]:
         try:
             if "base64" in segments:
                 if len(payload) > 4 * ((max_bytes + 2) // 3):
-                    raise MediaResolutionError(
+                    raise _MediaLimitExceededError(
                         f"batchwork: media exceeds the {max_bytes} byte limit"
                     )
                 data = base64.b64decode(payload, validate=True)
             else:
                 if _percent_decoded_size_exceeds(payload, max_bytes):
-                    raise MediaResolutionError(
+                    raise _MediaLimitExceededError(
                         f"batchwork: media exceeds the {max_bytes} byte limit"
                     )
                 data = unquote_to_bytes(payload)
@@ -340,7 +340,7 @@ def _decode_inline(value: str, max_bytes: int) -> tuple[bytes, str | None]:
         return data, declared
     try:
         if len(value) > 4 * ((max_bytes + 2) // 3):
-            raise MediaResolutionError(f"batchwork: media exceeds the {max_bytes} byte limit")
+            raise _MediaLimitExceededError(f"batchwork: media exceeds the {max_bytes} byte limit")
         return base64.b64decode(value, validate=True), None
     except (binascii.Error, ValueError) as error:
         raise MediaResolutionError(
@@ -461,15 +461,15 @@ class DefaultMediaResolver:
                             ) from error
                         length = response.headers.get("content-length")
                         if length is not None and int(length) > max_bytes:
-                            raise MediaResolutionError(
+                            raise _MediaLimitExceededError(
                                 f"batchwork: media exceeds the {max_bytes} byte limit"
                             )
                         chunks: list[bytes] = []
                         size = 0
-                        async for chunk in response.aiter_bytes():
+                        async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
                             size += len(chunk)
                             if size > max_bytes:
-                                raise MediaResolutionError(
+                                raise _MediaLimitExceededError(
                                     f"batchwork: media exceeds the {max_bytes} byte limit"
                                 )
                             chunks.append(chunk)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 
 import httpx
 
@@ -153,6 +153,7 @@ class GoogleAdapter:
         model_id: str,
         metadata: Mapping[str, str] | None = None,
         limits: BatchLimits | None = None,
+        validate_upload: Callable[[int], None] | None = None,
     ) -> BatchSnapshot:
         del metadata
         embedding = "embedcontent" in endpoint.lower()
@@ -177,6 +178,7 @@ class GoogleAdapter:
                 }
             },
             _inline_upload_limits(limits),
+            validate_upload=validate_upload,
         )
         raw = await request_json(
             self._client,

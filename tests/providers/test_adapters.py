@@ -46,7 +46,7 @@ async def test_provider_response_content_length_is_rejected_before_body_read() -
 async def test_result_record_overflow_preserves_prior_complete_records(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(shared_module, "RESULT_RECORD_BYTES", 7)
+    monkeypatch.setattr(shared_module, "MAX_RESULT_RECORD_BYTES", 7)
     response = httpx.Response(200, content=b'{"a":1}\n{"long":2}\n')
     records: list[dict[str, object]] = []
 
@@ -61,8 +61,8 @@ async def test_result_record_overflow_preserves_prior_complete_records(
 async def test_result_aggregate_overflow_stops_after_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(shared_module, "AGGREGATE_RESULTS_BYTES", 9)
-    response = httpx.Response(200, content=b'{"a":1}\n{}\n')
+    monkeypatch.setattr(shared_module, "MAX_AGGREGATE_RESULTS_BYTES", 9)
+    response = httpx.Response(200, stream=httpx.ByteStream(b'{"a":1}\n{}\n'))
     records: list[dict[str, object]] = []
 
     with pytest.raises(BatchworkError, match="transport exceeded"):
@@ -70,6 +70,25 @@ async def test_result_aggregate_overflow_stops_after_limit(
             records.append(record)
 
     assert records == [{"a": 1}]
+
+
+@pytest.mark.asyncio
+async def test_result_content_length_overflow_stops_before_body_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shared_module, "MAX_AGGREGATE_RESULTS_BYTES", 9)
+    response = httpx.Response(
+        200,
+        headers={"Content-Length": "10"},
+        stream=httpx.ByteStream(b'{"a":1}\n{}'),
+    )
+    records: list[dict[str, object]] = []
+
+    with pytest.raises(BatchworkError, match="transport exceeded"):
+        async for record in jsonl(response):
+            records.append(record)
+
+    assert records == []
 
 
 def _google_built_request_for_payload_size(payload_size: int) -> BuiltRequest:
@@ -757,7 +776,7 @@ async def test_google_inline_submit_rejects_oversized_payload_before_request(
             )
 
     assert str(caught.value) == (
-        f"batchwork: batch upload payload is {payload_size} bytes, "
+        f"batchwork: batch upload payload is at least {payload_size} bytes, "
         f"exceeding the {effective_limit} byte limit."
     )
     assert requests == []

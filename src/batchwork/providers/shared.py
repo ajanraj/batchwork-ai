@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
-from contextlib import asynccontextmanager, contextmanager
-from contextvars import ContextVar
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import httpx
 
 from batchwork._bounded_json import JsonSizeExceeded, encode_bounded_json
 from batchwork._limits import (
-    AGGREGATE_RESULTS_BYTES,
-    PROVIDER_RESPONSE_BYTES,
-    RESULT_RECORD_BYTES,
-    UPLOAD_BYTES,
+    MAX_AGGREGATE_RESULTS_BYTES,
+    MAX_PROVIDER_RESPONSE_BYTES,
+    MAX_RESULT_RECORD_BYTES,
+    MAX_UPLOAD_BYTES,
 )
 from batchwork._provider_failure import (
     ProviderFailureError,
@@ -25,22 +24,8 @@ from batchwork._provider_failure import (
     transport_failure,
 )
 from batchwork._typing import is_string_mapping
-from batchwork.errors import BatchworkError
+from batchwork.errors import BatchworkError, _LimitExceededError
 from batchwork.types import BatchImage, BatchLimits, BatchResult, BatchUsage, ProviderCredentials
-
-_UPLOAD_VALIDATOR: ContextVar[Callable[[int], None] | None] = ContextVar(
-    "batchwork_upload_validator", default=None
-)
-
-
-@contextmanager
-def serialized_upload_validation(validator: Callable[[int], None]) -> Iterator[None]:
-    """Validate exact provider-upload byte counts before mutation within this context."""
-    token = _UPLOAD_VALIDATOR.set(validator)
-    try:
-        yield
-    finally:
-        _UPLOAD_VALIDATOR.reset(token)
 
 
 def api_key(credentials: ProviderCredentials, env_vars: Sequence[str], label: str) -> str:
@@ -67,11 +52,16 @@ def merge_headers(defaults: Mapping[str, str], credentials: ProviderCredentials)
 
 def max_upload_bytes(limits: BatchLimits | None) -> int:
     if limits is None or limits.max_upload_bytes is None:
-        return UPLOAD_BYTES
+        return MAX_UPLOAD_BYTES
     return limits.max_upload_bytes
 
 
-def encode_jsonl(items: Sequence[Mapping[str, object]], limits: BatchLimits | None) -> bytes:
+def encode_jsonl(
+    items: Sequence[Mapping[str, object]],
+    limits: BatchLimits | None,
+    *,
+    validate_upload: Callable[[int], None] | None = None,
+) -> bytes:
     maximum = max_upload_bytes(limits)
     payload = bytearray()
     try:
@@ -79,33 +69,37 @@ def encode_jsonl(items: Sequence[Mapping[str, object]], limits: BatchLimits | No
             remaining = maximum - len(payload)
             encoded = encode_bounded_json(item, remaining)
             if len(encoded) + 1 > remaining:
-                raise JsonSizeExceeded(maximum, len(payload) + len(encoded) + 1)
+                raise JsonSizeExceeded(maximum, len(encoded) + 1)
             payload.extend(encoded)
             payload.append(ord("\n"))
     except JsonSizeExceeded as error:
         size = len(payload) + (error.known_size or maximum - len(payload) + 1)
-        raise BatchworkError(
+        raise _LimitExceededError(
             f"batchwork: batch upload JSONL is at least {size} bytes, "
             f"exceeding the {maximum} byte limit."
         ) from error
-    validator = _UPLOAD_VALIDATOR.get()
-    if validator is not None:
-        validator(len(payload))
+    if validate_upload is not None:
+        validate_upload(len(payload))
     return bytes(payload)
 
 
-def encode_json(value: Mapping[str, object], limits: BatchLimits | None) -> bytes:
+def encode_json(
+    value: Mapping[str, object],
+    limits: BatchLimits | None,
+    *,
+    validate_upload: Callable[[int], None] | None = None,
+) -> bytes:
     maximum = max_upload_bytes(limits)
     try:
         payload = encode_bounded_json(value, maximum)
     except JsonSizeExceeded as error:
         size = error.known_size or maximum + 1
-        raise BatchworkError(
-            f"batchwork: batch upload payload is {size} bytes, exceeding the {maximum} byte limit."
+        raise _LimitExceededError(
+            f"batchwork: batch upload payload is at least {size} bytes, "
+            f"exceeding the {maximum} byte limit."
         ) from error
-    validator = _UPLOAD_VALIDATOR.get()
-    if validator is not None:
-        validator(len(payload))
+    if validate_upload is not None:
+        validate_upload(len(payload))
     return payload
 
 
@@ -154,7 +148,7 @@ async def _bounded_response(response: httpx.Response, method: str, url: str) -> 
     length = response.headers.get("content-length")
     if length is not None:
         try:
-            oversized = int(length) > PROVIDER_RESPONSE_BYTES
+            oversized = int(length) > MAX_PROVIDER_RESPONSE_BYTES
         except ValueError:
             oversized = False
         if oversized:
@@ -163,8 +157,8 @@ async def _bounded_response(response: httpx.Response, method: str, url: str) -> 
                 protocol_failure(response),
             )
     content = bytearray()
-    async for chunk in response.aiter_bytes():
-        if len(content) + len(chunk) > PROVIDER_RESPONSE_BYTES:
+    async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+        if len(content) + len(chunk) > MAX_PROVIDER_RESPONSE_BYTES:
             raise ProviderFailureError(
                 "batchwork: provider response exceeded the safe byte limit.",
                 protocol_failure(response),
@@ -252,10 +246,18 @@ async def jsonl(response: httpx.Response) -> AsyncIterator[dict[str, object]]:
     number = 0
     aggregate = 0
     pending = bytearray()
+    length = response.headers.get("content-length")
+    if length is not None:
+        try:
+            oversized = int(length) > MAX_AGGREGATE_RESULTS_BYTES
+        except ValueError:
+            oversized = False
+        if oversized:
+            raise BatchworkError("batchwork: provider result transport exceeded the safe limit.")
     async for chunk in response.aiter_bytes():
         for byte in chunk:
             aggregate += 1
-            if aggregate > AGGREGATE_RESULTS_BYTES:
+            if aggregate > MAX_AGGREGATE_RESULTS_BYTES:
                 raise BatchworkError(
                     "batchwork: provider result transport exceeded the safe limit."
                 )
@@ -267,7 +269,7 @@ async def jsonl(response: httpx.Response) -> AsyncIterator[dict[str, object]]:
                     yield _jsonl_object(raw, number)
                 continue
             pending.append(byte)
-            if len(pending) > RESULT_RECORD_BYTES:
+            if len(pending) > MAX_RESULT_RECORD_BYTES:
                 raise BatchworkError(
                     f"batchwork: provider result record at line {number + 1} exceeded "
                     "the safe limit."

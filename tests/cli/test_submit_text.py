@@ -10,12 +10,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import ClassVar
 
+import click
 import pytest
 from click.testing import CliRunner
 
 import batchwork.cli._submit_text as submit_module
 from batchwork.cli._commands import cli
 from batchwork.cli._failures import InterruptionRequested, TerminationRequested
+from batchwork.cli._volume import WorkloadVolume, require_large_batch_authorization
 
 
 class _FakeOpenAIHandler(BaseHTTPRequestHandler):
@@ -589,7 +591,7 @@ def test_serialized_upload_gate_prevents_provider_mutation(
     base_url, provider_requests = fake_openai
     source = tmp_path / "requests.jsonl"
     source.write_text('{"prompt":"this payload crosses the test soft limit"}\n')
-    monkeypatch.setattr(submit_module, "LARGE_BATCH_UPLOAD_BYTES", 32)
+    monkeypatch.setattr("batchwork.cli._volume.LARGE_BATCH_UPLOAD_BYTES", 32)
 
     result = CliRunner().invoke(
         cli,
@@ -612,6 +614,13 @@ def test_serialized_upload_gate_prevents_provider_mutation(
     assert error["code"] == "large_batch_not_allowed"
     assert "32 byte soft limit" in error["message"]
     assert provider_requests == []
+
+
+def test_generated_image_volume_requires_large_batch_authorization() -> None:
+    with pytest.raises(click.UsageError, match="101 requested generated images"):
+        require_large_batch_authorization(WorkloadVolume(generated_images=101), authorized=False)
+
+    require_large_batch_authorization(WorkloadVolume(generated_images=101), authorized=True)
 
 
 def test_submit_text_rejects_oversized_jsonl_line_before_provider_mutation(
