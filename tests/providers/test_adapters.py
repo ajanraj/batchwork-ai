@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 import batchwork.providers.openai_compatible as compatible_module
+import batchwork.providers.shared as shared_module
 from batchwork._network import AddressResolutionFailure, AddressResolutionFailureReason
 from batchwork._provider_failure import ProviderFailureError, ProviderFailureKind
 from batchwork.body import BuiltRequest
@@ -15,6 +16,7 @@ from batchwork.errors import BatchworkError
 from batchwork.providers import get_adapter
 from batchwork.providers.shared import (
     embedding_from_body,
+    jsonl,
     normalize_openai_result,
     request,
     request_json,
@@ -22,6 +24,52 @@ from batchwork.providers.shared import (
 from batchwork.types import BatchLimits, BatchProvider, ProviderCredentials
 
 _GOOGLE_INLINE_BATCH_MAX_BYTES = 20 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_provider_response_content_length_is_rejected_before_body_read() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Length": str(320 * 1024 * 1024 + 1)},
+            stream=httpx.ByteStream(b""),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderFailureError) as caught:
+            await request_json(client, "GET", "https://example.test/batch")
+
+    assert caught.value.failure.kind is ProviderFailureKind.PROTOCOL
+
+
+@pytest.mark.asyncio
+async def test_result_record_overflow_preserves_prior_complete_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shared_module, "RESULT_RECORD_BYTES", 7)
+    response = httpx.Response(200, content=b'{"a":1}\n{"long":2}\n')
+    records: list[dict[str, object]] = []
+
+    with pytest.raises(BatchworkError, match="record at line 2"):
+        async for record in jsonl(response):
+            records.append(record)
+
+    assert records == [{"a": 1}]
+
+
+@pytest.mark.asyncio
+async def test_result_aggregate_overflow_stops_after_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shared_module, "AGGREGATE_RESULTS_BYTES", 9)
+    response = httpx.Response(200, content=b'{"a":1}\n{}\n')
+    records: list[dict[str, object]] = []
+
+    with pytest.raises(BatchworkError, match="transport exceeded"):
+        async for record in jsonl(response):
+            records.append(record)
+
+    assert records == [{"a": 1}]
 
 
 def _google_built_request_for_payload_size(payload_size: int) -> BuiltRequest:

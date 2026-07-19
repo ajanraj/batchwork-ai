@@ -26,6 +26,7 @@ class _LifecycleHandler(BaseHTTPRequestHandler):
     snapshot_retry_after: ClassVar[str | None] = None
     break_result_stream_after_first: ClassVar[bool] = False
     batch_create_gate: ClassVar[threading.Event | None] = None
+    oversized_snapshot: ClassVar[bool] = False
 
     def _json(self, document: object) -> None:
         encoded = json.dumps(document).encode()
@@ -69,6 +70,12 @@ class _LifecycleHandler(BaseHTTPRequestHandler):
                 if self.snapshot_retry_after is not None:
                     self.send_header("Retry-After", self.snapshot_retry_after)
                 self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if self.oversized_snapshot:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(320 * 1024 * 1024 + 1))
                 self.end_headers()
                 return
             status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
@@ -131,6 +138,7 @@ def lifecycle_provider() -> tuple[str, type[_LifecycleHandler]]:
     _LifecycleHandler.snapshot_retry_after = None
     _LifecycleHandler.break_result_stream_after_first = False
     _LifecycleHandler.batch_create_gate = None
+    _LifecycleHandler.oversized_snapshot = False
     server = ThreadingHTTPServer(("127.0.0.1", 0), _LifecycleHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -375,6 +383,28 @@ def test_buffered_json_result_failure_keeps_stdout_empty(
     assert "partial_output" not in error
     assert "records_emitted" not in error
     assert handler.requests.count(("GET", "/v1/files/file-output/content")) == 1
+
+
+def test_installed_oversized_provider_response_keeps_buffered_json_empty(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    handler.oversized_snapshot = True
+
+    result = subprocess.run(
+        [_batchwork(), "--json", "results", *_direct(base_url)],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 5
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["error"]["code"] == "provider_protocol_error"
+    assert handler.requests == [("GET", "/v1/batches/batch_123")]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")

@@ -138,7 +138,11 @@ def provider_failure(
             submission_outcome = "unknown"
             recovery = Recovery(action="inspect_provider_account")
         retryable = False
-    if result_stream and category == "provider_availability":
+    if (
+        result_stream
+        and category == "provider_availability"
+        and (records_emitted or failure.kind is not ProviderFailureKind.PROTOCOL)
+    ):
         code = "result_stream_failed"
         message = (
             "Provider result retrieval ended before the complete result set was received. "

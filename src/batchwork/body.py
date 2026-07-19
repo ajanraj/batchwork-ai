@@ -6,12 +6,13 @@ provider-owned options at the boundary.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from ._anthropic_serialization import anthropic_prompt
+from ._bounded_json import JsonSizeExceeded, encode_bounded_json
 from ._google_serialization import google_messages
+from ._limits import REQUEST_BYTES, REQUESTS
 from ._serialization import (
     Request,
     _chat_tool,
@@ -86,7 +87,7 @@ def _limits_value(limits: BatchLimits | None, name: str, default: int) -> int:
 
 
 def validate_request_count(requests: Sequence[object], limits: BatchLimits | None) -> None:
-    maximum = _limits_value(limits, "max_requests", 50_000)
+    maximum = _limits_value(limits, "max_requests", REQUESTS)
     if len(requests) > maximum:
         raise BatchworkError(
             f"batchwork: requests length {len(requests)} exceeds the {maximum} request limit."
@@ -94,12 +95,18 @@ def validate_request_count(requests: Sequence[object], limits: BatchLimits | Non
 
 
 def _validate_size(custom_id: str, body: Mapping[str, object], limits: BatchLimits | None) -> None:
-    maximum = _limits_value(limits, "max_request_bytes", 20 * 1024 * 1024)
-    size = len(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode())
-    if size > maximum:
-        raise BatchworkError(
-            f'batchwork: request "{custom_id}" is {size} bytes, exceeding the {maximum} byte limit.'
+    maximum = _limits_value(limits, "max_request_bytes", REQUEST_BYTES)
+    try:
+        encode_bounded_json(body, maximum)
+    except JsonSizeExceeded as error:
+        size = (
+            f"{error.known_size} bytes"
+            if error.known_size is not None
+            else f"more than {maximum} bytes"
         )
+        raise BatchworkError(
+            f'batchwork: request "{custom_id}" is {size}, exceeding the {maximum} byte limit.'
+        ) from error
 
 
 def _assigned(requests: Sequence[Request]) -> list[tuple[str, dict[str, object]]]:

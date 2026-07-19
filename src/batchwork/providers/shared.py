@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import AsyncIterator, Mapping, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 
 import httpx
 
+from batchwork._bounded_json import JsonSizeExceeded, encode_bounded_json
+from batchwork._limits import (
+    AGGREGATE_RESULTS_BYTES,
+    PROVIDER_RESPONSE_BYTES,
+    RESULT_RECORD_BYTES,
+    UPLOAD_BYTES,
+)
 from batchwork._provider_failure import (
     ProviderFailureError,
     http_failure,
@@ -19,6 +27,20 @@ from batchwork._provider_failure import (
 from batchwork._typing import is_string_mapping
 from batchwork.errors import BatchworkError
 from batchwork.types import BatchImage, BatchLimits, BatchResult, BatchUsage, ProviderCredentials
+
+_UPLOAD_VALIDATOR: ContextVar[Callable[[int], None] | None] = ContextVar(
+    "batchwork_upload_validator", default=None
+)
+
+
+@contextmanager
+def serialized_upload_validation(validator: Callable[[int], None]) -> Iterator[None]:
+    """Validate exact provider-upload byte counts before mutation within this context."""
+    token = _UPLOAD_VALIDATOR.set(validator)
+    try:
+        yield
+    finally:
+        _UPLOAD_VALIDATOR.reset(token)
 
 
 def api_key(credentials: ProviderCredentials, env_vars: Sequence[str], label: str) -> str:
@@ -45,32 +67,45 @@ def merge_headers(defaults: Mapping[str, str], credentials: ProviderCredentials)
 
 def max_upload_bytes(limits: BatchLimits | None) -> int:
     if limits is None or limits.max_upload_bytes is None:
-        return 200 * 1024 * 1024
+        return UPLOAD_BYTES
     return limits.max_upload_bytes
 
 
 def encode_jsonl(items: Sequence[Mapping[str, object]], limits: BatchLimits | None) -> bytes:
-    payload = b"".join(
-        json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
-        for item in items
-    )
     maximum = max_upload_bytes(limits)
-    if len(payload) > maximum:
+    payload = bytearray()
+    try:
+        for item in items:
+            remaining = maximum - len(payload)
+            encoded = encode_bounded_json(item, remaining)
+            if len(encoded) + 1 > remaining:
+                raise JsonSizeExceeded(maximum, len(payload) + len(encoded) + 1)
+            payload.extend(encoded)
+            payload.append(ord("\n"))
+    except JsonSizeExceeded as error:
+        size = len(payload) + (error.known_size or maximum - len(payload) + 1)
         raise BatchworkError(
-            f"batchwork: batch upload JSONL is {len(payload)} bytes, "
+            f"batchwork: batch upload JSONL is at least {size} bytes, "
             f"exceeding the {maximum} byte limit."
-        )
-    return payload
+        ) from error
+    validator = _UPLOAD_VALIDATOR.get()
+    if validator is not None:
+        validator(len(payload))
+    return bytes(payload)
 
 
 def encode_json(value: Mapping[str, object], limits: BatchLimits | None) -> bytes:
-    payload = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
     maximum = max_upload_bytes(limits)
-    if len(payload) > maximum:
+    try:
+        payload = encode_bounded_json(value, maximum)
+    except JsonSizeExceeded as error:
+        size = error.known_size or maximum + 1
         raise BatchworkError(
-            f"batchwork: batch upload payload is {len(payload)} bytes, "
-            f"exceeding the {maximum} byte limit."
-        )
+            f"batchwork: batch upload payload is {size} bytes, exceeding the {maximum} byte limit."
+        ) from error
+    validator = _UPLOAD_VALIDATOR.get()
+    if validator is not None:
+        validator(len(payload))
     return payload
 
 
@@ -87,7 +122,7 @@ async def request(
     try:
         if client is None:
             async with httpx.AsyncClient() as owned:
-                response = await owned.request(
+                async with owned.stream(
                     method,
                     url,
                     headers=headers,
@@ -95,9 +130,10 @@ async def request(
                     files=files,
                     data=data,
                     follow_redirects=False,
-                )
+                ) as streamed:
+                    return await _bounded_response(streamed, method, url)
         else:
-            response = await client.request(
+            async with client.stream(
                 method,
                 url,
                 headers=headers,
@@ -105,16 +141,42 @@ async def request(
                 files=files,
                 data=data,
                 follow_redirects=False,
-            )
+            ) as streamed:
+                return await _bounded_response(streamed, method, url)
     except httpx.HTTPError as error:
         raise ProviderFailureError(
             "batchwork: provider request failed during transport.", transport_failure()
         ) from error
-    if not 200 <= response.status_code < 300:
-        raise ProviderFailureError(
-            f"batchwork: {method} {url} failed with {response.status_code}", http_failure(response)
-        )
-    return response
+
+
+async def _bounded_response(response: httpx.Response, method: str, url: str) -> httpx.Response:
+    _raise_for_provider_status(response, method, url)
+    length = response.headers.get("content-length")
+    if length is not None:
+        try:
+            oversized = int(length) > PROVIDER_RESPONSE_BYTES
+        except ValueError:
+            oversized = False
+        if oversized:
+            raise ProviderFailureError(
+                "batchwork: provider response exceeded the safe byte limit.",
+                protocol_failure(response),
+            )
+    content = bytearray()
+    async for chunk in response.aiter_bytes():
+        if len(content) + len(chunk) > PROVIDER_RESPONSE_BYTES:
+            raise ProviderFailureError(
+                "batchwork: provider response exceeded the safe byte limit.",
+                protocol_failure(response),
+            )
+        content.extend(chunk)
+    return httpx.Response(
+        response.status_code,
+        headers=response.headers,
+        content=bytes(content),
+        request=response.request,
+        extensions=response.extensions,
+    )
 
 
 @asynccontextmanager
@@ -188,19 +250,42 @@ def _raise_for_provider_status(response: httpx.Response, method: str, url: str) 
 
 async def jsonl(response: httpx.Response) -> AsyncIterator[dict[str, object]]:
     number = 0
-    async for raw in response.aiter_lines():
+    aggregate = 0
+    pending = bytearray()
+    async for chunk in response.aiter_bytes():
+        for byte in chunk:
+            aggregate += 1
+            if aggregate > AGGREGATE_RESULTS_BYTES:
+                raise BatchworkError(
+                    "batchwork: provider result transport exceeded the safe limit."
+                )
+            if byte == ord("\n"):
+                number += 1
+                raw = bytes(pending).removesuffix(b"\r")
+                pending.clear()
+                if raw.strip():
+                    yield _jsonl_object(raw, number)
+                continue
+            pending.append(byte)
+            if len(pending) > RESULT_RECORD_BYTES:
+                raise BatchworkError(
+                    f"batchwork: provider result record at line {number + 1} exceeded "
+                    "the safe limit."
+                )
+    if pending:
         number += 1
-        if not raw.strip():
-            continue
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError as error:
-            raise BatchworkError(f"batchwork: malformed JSONL at line {number}.") from error
-        if not isinstance(value, dict):
-            raise BatchworkError(
-                f"batchwork: malformed JSONL at line {number}: expected an object."
-            )
-        yield value
+        yield _jsonl_object(bytes(pending).removesuffix(b"\r"), number)
+
+
+def _jsonl_object(raw: bytes, number: int) -> dict[str, object]:
+    try:
+        decoded = raw.decode("utf-8")
+        value = json.loads(decoded)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BatchworkError(f"batchwork: malformed JSONL at line {number}.") from error
+    if not isinstance(value, dict):
+        raise BatchworkError(f"batchwork: malformed JSONL at line {number}: expected an object.")
+    return value
 
 
 def timestamp(value: object) -> datetime | None:

@@ -15,7 +15,7 @@ from .body import (
 )
 from .errors import BatchClosedError, BatchworkError
 from .job import BatchJob
-from .media import DefaultMediaResolver, MediaResolver
+from .media import DefaultMediaResolver, MediaResolver, MediaSource, ResolvedMedia
 from .providers.adapter import BatchAdapter
 from .types import (
     AssistantMessage,
@@ -58,6 +58,12 @@ _API_KEY_ENV = {
     BatchProvider.TOGETHER: "TOGETHER_API_KEY",
     BatchProvider.XAI: "XAI_API_KEY",
 }
+
+
+class _RemoteMediaDeferred(Exception):
+    pass
+
+
 _BASE_URL_ENV = {
     provider: f"{name.removesuffix('_API_KEY')}_BASE_URL" for provider, name in _API_KEY_ENV.items()
 }
@@ -189,8 +195,19 @@ class Batchwork:
         adapter, resolved_credentials = self._adapter_and_credentials(
             spec.provider, credentials, api_key=api_key, base_url=base_url, headers=headers
         )
+        locally_prepared = await self._resolve_request_media(
+            spec,
+            requests,
+            limits,
+            resolved_credentials.base_url,
+            remote=False,
+        )
         prepared = await self._resolve_request_media(
-            spec, requests, limits, resolved_credentials.base_url
+            spec,
+            locally_prepared,
+            limits,
+            resolved_credentials.base_url,
+            remote=True,
         )
         built = build_text_bodies(
             spec.provider, spec.model_id, prepared, defaults, limits, kind=spec.kind
@@ -312,8 +329,29 @@ class Batchwork:
         requests: Sequence[BatchRequest],
         limits: BatchLimits,
         base_url: str | None,
+        *,
+        remote: bool = True,
     ) -> list[BatchRequest]:
         prepared: list[BatchRequest] = []
+        materialized_bytes = 0
+
+        async def resolve(source: MediaSource, media_type: str | None) -> ResolvedMedia:
+            nonlocal materialized_bytes
+            if not remote and str(source).startswith("https://"):
+                raise _RemoteMediaDeferred
+            resolved = await self._media_resolver.resolve(
+                source,
+                media_type=media_type,
+                max_bytes=limits.max_request_bytes,
+            )
+            materialized_bytes += len(resolved.data)
+            if materialized_bytes > limits.max_upload_bytes:
+                raise BatchworkError(
+                    "batchwork: aggregate decoded media exceeds the "
+                    f"{limits.max_upload_bytes} byte limit"
+                )
+            return resolved
+
         for request in requests:
             if request.messages is None:
                 prepared.append(request)
@@ -355,11 +393,11 @@ class Batchwork:
                             ):
                                 output_parts.append(output_part)
                                 continue
-                            resolved = await self._media_resolver.resolve(
-                                source_value,
-                                media_type=output_part.media_type,
-                                max_bytes=limits.max_request_bytes,
-                            )
+                            try:
+                                resolved = await resolve(source_value, output_part.media_type)
+                            except _RemoteMediaDeferred:
+                                output_parts.append(output_part)
+                                continue
                             output_parts.append(
                                 output_part.model_copy(
                                     update={
@@ -389,11 +427,11 @@ class Batchwork:
                         ):
                             parts.append(part)
                             continue
-                        resolved = await self._media_resolver.resolve(
-                            source,
-                            media_type=part.media_type,
-                            max_bytes=limits.max_request_bytes,
-                        )
+                        try:
+                            resolved = await resolve(source, part.media_type)
+                        except _RemoteMediaDeferred:
+                            parts.append(part)
+                            continue
                         parts.append(
                             part.model_copy(
                                 update={"image": resolved.data, "media_type": resolved.media_type}
@@ -429,11 +467,11 @@ class Batchwork:
                         if self._may_pass_media_url(spec, source, part.media_type, base_url):
                             parts.append(part)
                             continue
-                        resolved = await self._media_resolver.resolve(
-                            source,
-                            media_type=part.media_type,
-                            max_bytes=limits.max_request_bytes,
-                        )
+                        try:
+                            resolved = await resolve(source, part.media_type)
+                        except _RemoteMediaDeferred:
+                            parts.append(part)
+                            continue
                         parts.append(
                             part.model_copy(
                                 update={"data": resolved.data, "media_type": resolved.media_type}

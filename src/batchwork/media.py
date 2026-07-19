@@ -294,7 +294,28 @@ def _validate_size(data: bytes, max_bytes: int) -> None:
         )
 
 
-def _decode_inline(value: str) -> tuple[bytes, str | None]:
+def _percent_decoded_size_exceeds(value: str, maximum: int) -> bool:
+    size = 0
+    index = 0
+    hexadecimal = frozenset("0123456789abcdefABCDEF")
+    while index < len(value):
+        if (
+            value[index] == "%"
+            and index + 2 < len(value)
+            and value[index + 1] in hexadecimal
+            and value[index + 2] in hexadecimal
+        ):
+            size += 1
+            index += 3
+        else:
+            size += len(value[index].encode())
+            index += 1
+        if size > maximum:
+            return True
+    return False
+
+
+def _decode_inline(value: str, max_bytes: int) -> tuple[bytes, str | None]:
     if value.startswith("data:"):
         header, separator, payload = value[5:].partition(",")
         if not separator:
@@ -302,15 +323,24 @@ def _decode_inline(value: str) -> tuple[bytes, str | None]:
         segments = header.split(";")
         declared = segments[0] or None
         try:
-            data = (
-                base64.b64decode(payload, validate=True)
-                if "base64" in segments
-                else unquote_to_bytes(payload)
-            )
+            if "base64" in segments:
+                if len(payload) > 4 * ((max_bytes + 2) // 3):
+                    raise MediaResolutionError(
+                        f"batchwork: media exceeds the {max_bytes} byte limit"
+                    )
+                data = base64.b64decode(payload, validate=True)
+            else:
+                if _percent_decoded_size_exceeds(payload, max_bytes):
+                    raise MediaResolutionError(
+                        f"batchwork: media exceeds the {max_bytes} byte limit"
+                    )
+                data = unquote_to_bytes(payload)
         except (binascii.Error, ValueError) as error:
             raise MediaResolutionError("batchwork: malformed data URL payload") from error
         return data, declared
     try:
+        if len(value) > 4 * ((max_bytes + 2) // 3):
+            raise MediaResolutionError(f"batchwork: media exceeds the {max_bytes} byte limit")
         return base64.b64decode(value, validate=True), None
     except (binascii.Error, ValueError) as error:
         raise MediaResolutionError(
@@ -364,7 +394,7 @@ class DefaultMediaResolver:
             if isinstance(raw_data, bytes):
                 _validate_size(raw_data, max_bytes)
                 return ResolvedMedia(raw_data, _validated_type(raw_data, media_type))
-            data, declared = _decode_inline(raw_data)
+            data, declared = _decode_inline(raw_data, max_bytes)
             _validate_size(data, max_bytes)
             return ResolvedMedia(data, _validated_type(data, media_type or declared))
         elif isinstance(source, TaggedFileDataUrl):
@@ -381,7 +411,7 @@ class DefaultMediaResolver:
             if parsed.scheme != "data":
                 raise MediaResolutionError("batchwork: remote media URLs must use HTTPS")
         if parsed.scheme != "https":
-            data, declared = _decode_inline(value)
+            data, declared = _decode_inline(value, max_bytes)
             _validate_size(data, max_bytes)
             return ResolvedMedia(data, _validated_type(data, media_type or declared))
         if parsed.username is not None or parsed.password is not None:

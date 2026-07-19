@@ -15,13 +15,13 @@ from typing import BinaryIO
 import click
 from pydantic import ValidationError
 
+from batchwork._limits import RECORD_BYTES, REQUESTS, SOURCE_BYTES
 from batchwork.types import BatchRequest
 
 from ._contract import KnownErrorCode
 from ._failures import CliUsageError
 
-_MAX_SOURCE_BYTES = 256 * 1024 * 1024
-_MAX_LINE_BYTES = 24 * 1024 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
 
 
 class InputFormat(StrEnum):
@@ -138,28 +138,57 @@ def _read_source(source: Path, stdin: BinaryIO | None, input_format: InputFormat
             ) from error
         label = f'SOURCE "{source}"'
         close = True
+    encoded = bytearray()
+    record_bytes = 0
+    record_number = 1
+    previous_cr = False
+    csv_quoted = False
+    csv_pending_quote = False
     try:
-        encoded = stream.read(_MAX_SOURCE_BYTES + 1)
+        while chunk := stream.read(_READ_CHUNK_BYTES):
+            for byte in chunk:
+                encoded.append(byte)
+                if len(encoded) > SOURCE_BYTES:
+                    raise _usage(
+                        f"{label} exceeds the {SOURCE_BYTES} byte transport limit.",
+                        code="hard_limit_exceeded",
+                    )
+                if input_format is InputFormat.JSON:
+                    continue
+                record_bytes += 1
+                if input_format is InputFormat.CSV:
+                    if byte == ord('"'):
+                        if csv_quoted and csv_pending_quote:
+                            csv_pending_quote = False
+                        elif csv_quoted:
+                            csv_pending_quote = True
+                        else:
+                            csv_quoted = True
+                    elif csv_pending_quote:
+                        csv_quoted = False
+                        csv_pending_quote = False
+                    if byte in {ord("\n"), ord("\r")} and not csv_quoted:
+                        record_bytes = 0
+                        if not (byte == ord("\n") and previous_cr):
+                            record_number += 1
+                elif byte in {ord("\n"), ord("\r")}:
+                    record_bytes = 0
+                    if not (byte == ord("\n") and previous_cr):
+                        record_number += 1
+                if record_bytes > RECORD_BYTES:
+                    unit = "record" if input_format is InputFormat.CSV else "line"
+                    raise _usage(
+                        f"{label} {unit} {record_number} exceeds the {RECORD_BYTES} byte limit.",
+                        code="hard_limit_exceeded",
+                    )
+                previous_cr = byte == ord("\r")
     except OSError as error:
         raise _usage(f"Could not read {label}: {error}.", code="input_read_failed") from error
     finally:
         if close:
             stream.close()
-    if len(encoded) > _MAX_SOURCE_BYTES:
-        raise _usage(
-            f"{label} exceeds the {_MAX_SOURCE_BYTES} byte transport limit.",
-            code="hard_limit_exceeded",
-        )
-    if input_format is not InputFormat.JSON:
-        normalized_lines = encoded.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-        for line_number, line in enumerate(normalized_lines.split(b"\n"), start=1):
-            if len(line) > _MAX_LINE_BYTES:
-                raise _usage(
-                    f"{label} line {line_number} exceeds the {_MAX_LINE_BYTES} byte limit.",
-                    code="hard_limit_exceeded",
-                )
     try:
-        return encoded.decode("utf-8-sig")
+        return bytes(encoded).decode("utf-8-sig")
     except UnicodeDecodeError as error:
         raise _usage(
             f"Could not read {label}: input must be UTF-8 with an optional BOM.",
@@ -211,6 +240,11 @@ def _json_requests(contents: str) -> list[_ParsedRequest]:
     if isinstance(document, list):
         if not document:
             raise _usage("SOURCE must contain at least one JSON request object.")
+        if len(document) > REQUESTS:
+            raise _usage(
+                f"SOURCE exceeds the {REQUESTS} request limit.",
+                code="hard_limit_exceeded",
+            )
         return [
             _validate_request(item, f"JSON index {index}") for index, item in enumerate(document)
         ]
@@ -222,6 +256,11 @@ def _jsonl_requests(contents: str) -> list[_ParsedRequest]:
     for line_number, line in enumerate(_lines(contents), start=1):
         if not line.strip():
             continue
+        if len(parsed) == REQUESTS:
+            raise _usage(
+                f"SOURCE exceeds the {REQUESTS} request limit at JSONL line {line_number}.",
+                code="hard_limit_exceeded",
+            )
         document = _decode_json(line, f"Invalid JSONL object at line {line_number}")
         parsed.append(_validate_request(document, f"JSONL line {line_number}"))
     if not parsed:
@@ -250,6 +289,11 @@ def _csv_requests(contents: str) -> list[_ParsedRequest]:
     parsed: list[_ParsedRequest] = []
     try:
         for row_number, row in enumerate(reader, start=2):
+            if len(parsed) == REQUESTS:
+                raise _usage(
+                    f"SOURCE exceeds the {REQUESTS} request limit at CSV row {row_number}.",
+                    code="hard_limit_exceeded",
+                )
             if len(row) != len(header):
                 column = header[len(row)] if len(row) < len(header) else str(len(header) + 1)
                 raise _usage(
@@ -290,11 +334,16 @@ def _csv_requests(contents: str) -> list[_ParsedRequest]:
 
 
 def _text_requests(contents: str) -> list[_ParsedRequest]:
-    parsed = [
-        _ParsedRequest(BatchRequest(prompt=line), f"text line {line_number}")
-        for line_number, line in enumerate(_lines(contents), start=1)
-        if line.strip()
-    ]
+    parsed: list[_ParsedRequest] = []
+    for line_number, line in enumerate(_lines(contents), start=1):
+        if not line.strip():
+            continue
+        if len(parsed) == REQUESTS:
+            raise _usage(
+                f"SOURCE exceeds the {REQUESTS} request limit at text line {line_number}.",
+                code="hard_limit_exceeded",
+            )
+        parsed.append(_ParsedRequest(BatchRequest(prompt=line), f"text line {line_number}"))
     if not parsed:
         raise _usage("SOURCE must contain at least one non-whitespace text line.")
     return parsed
