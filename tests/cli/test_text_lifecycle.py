@@ -23,6 +23,7 @@ class _LifecycleHandler(BaseHTTPRequestHandler):
     result_gate: ClassVar[threading.Event | None] = None
     result_status: ClassVar[int] = 200
     snapshot_http_statuses: ClassVar[list[int]] = [200]
+    snapshot_retry_after: ClassVar[str | None] = None
     break_result_stream_after_first: ClassVar[bool] = False
 
     def _json(self, document: object) -> None:
@@ -62,6 +63,8 @@ class _LifecycleHandler(BaseHTTPRequestHandler):
             )
             if response_status != 200:
                 self.send_response(response_status)
+                if self.snapshot_retry_after is not None:
+                    self.send_header("Retry-After", self.snapshot_retry_after)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
@@ -122,6 +125,7 @@ def lifecycle_provider() -> tuple[str, type[_LifecycleHandler]]:
     _LifecycleHandler.result_gate = None
     _LifecycleHandler.result_status = 200
     _LifecycleHandler.snapshot_http_statuses = [200]
+    _LifecycleHandler.snapshot_retry_after = None
     _LifecycleHandler.break_result_stream_after_first = False
     server = ThreadingHTTPServer(("127.0.0.1", 0), _LifecycleHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -340,6 +344,156 @@ def test_jsonl_result_stream_failure_preserves_complete_records_and_counts(
     assert error["records_emitted"] == 1
     assert error["item_successes"] == 1
     assert error["item_failures"] == 0
+    assert "canonical job identity and custom_id" in error["message"]
+    assert handler.requests.count(("GET", "/v1/files/file-output/content")) == 1
+
+
+def test_buffered_json_result_failure_keeps_stdout_empty(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    handler.break_result_stream_after_first = True
+
+    result = subprocess.run(
+        [_batchwork(), "--json", "results", *_direct(base_url)],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 5
+    assert result.stdout == ""
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "result_stream_failed"
+    assert "partial_output" not in error
+    assert "records_emitted" not in error
+    assert handler.requests.count(("GET", "/v1/files/file-output/content")) == 3
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+def test_buffered_json_spool_failure_is_local_state_failure(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    blocked = tmp_path / "blocked-temp"
+    blocked.mkdir(mode=0o500)
+    environment = _environment()
+    environment["TMPDIR"] = str(blocked)
+    try:
+        result = subprocess.run(
+            [_batchwork(), "--json", "results", *_direct(base_url)],
+            cwd=tmp_path,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        blocked.chmod(0o700)
+
+    assert result.returncode == 8
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["error"]["code"] == "output_write_failed"
+    assert all(path != "/v1/batches/batch_123/cancel" for _, path in handler.requests)
+
+
+def test_status_retries_approved_transient_reads_at_most_three_times(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    handler.snapshot_http_statuses = [503, 503, 503, 200]
+
+    result = subprocess.run(
+        [_batchwork(), "--json", "status", *_direct(base_url)],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 5
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["error"]["code"] == "provider_unavailable"
+    assert handler.requests == [("GET", "/v1/batches/batch_123")] * 3
+
+
+def test_status_recovers_within_safe_read_retry_budget(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    handler.snapshot_http_statuses = [503, 200]
+    handler.snapshot_retry_after = "0"
+
+    result = subprocess.run(
+        [_batchwork(), "--json", "status", *_direct(base_url)],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["snapshot"]["status"] == "completed"
+    assert handler.requests == [("GET", "/v1/batches/batch_123")] * 2
+
+
+def test_status_does_not_retry_nonapproved_transient_status(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    handler.snapshot_http_statuses = [425, 200]
+
+    result = subprocess.run(
+        [_batchwork(), "--json", "status", *_direct(base_url)],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 5
+    assert handler.requests == [("GET", "/v1/batches/batch_123")]
+
+
+def test_wait_retry_after_cannot_extend_local_deadline(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    handler.snapshot_http_statuses = [503, 200]
+    handler.snapshot_retry_after = "60"
+
+    result = subprocess.run(
+        [
+            _batchwork(),
+            "--json",
+            "wait",
+            *_direct(base_url),
+            "--timeout",
+            ".05s",
+        ],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 7
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "wait_timeout"
+    assert error["job"] == "openai:batch_123"
+    assert handler.requests == [("GET", "/v1/batches/batch_123")]
 
 
 def test_installed_cancel_is_noop_for_terminal_job(
@@ -810,7 +964,10 @@ def test_installed_run_timeout_preserves_resumable_job_without_cancelling(
 
     assert result.returncode == 7
     job = json.loads(result.stdout.splitlines()[0])["job"]
-    assert json.loads(result.stderr)["error"]["code"] == "wait_timeout"
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "wait_timeout"
+    assert error["partial_output"] is True
+    assert error["records_emitted"] == 1
     assert all(path != "/v1/batches/batch_123/cancel" for _, path in handler.requests)
 
     handler.requests = []
@@ -867,5 +1024,71 @@ def test_installed_wait_signal_preserves_remote_job(
 
     assert process.returncode == exit_code
     assert stdout == ""
-    assert json.loads(stderr)["error"]["code"] == error_code
+    error = json.loads(stderr)["error"]
+    assert error["code"] == error_code
+    assert error["job"] == "openai:batch_123"
+    assert error["item_successes"] == 0
+    assert error["item_failures"] == 0
+    assert error["recovery"]["command"][:3] == ["batchwork", "wait", "openai:batch_123"]
     assert all(path != "/v1/batches/batch_123/cancel" for _, path in handler.requests)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal exit contract")
+@pytest.mark.parametrize("process_signal", (signal.SIGINT, signal.SIGTERM))
+def test_repeated_signal_terminates_within_bounded_time(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+    process_signal: signal.Signals,
+) -> None:
+    base_url, handler = lifecycle_provider
+    handler.statuses = ["in_progress"]
+    process = subprocess.Popen(
+        [_batchwork(), "--json", "wait", *_direct(base_url)],
+        cwd=tmp_path,
+        env=_environment(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 5
+    while not handler.requests and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert handler.requests
+
+    process.send_signal(process_signal)
+    time.sleep(0.05)
+    try:
+        process.send_signal(process_signal)
+    except ProcessLookupError:
+        pass
+    stdout, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == 128 + process_signal
+    assert stdout == ""
+    assert "Traceback" not in stderr
+    assert all(path != "/v1/batches/batch_123/cancel" for _, path in handler.requests)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX broken-pipe contract")
+def test_broken_stdout_pipe_exits_quietly_without_cancelling(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    process = subprocess.Popen(
+        [_batchwork(), "--json", "status", *_direct(base_url)],
+        cwd=tmp_path,
+        env=_environment(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    process.stdout.close()
+    assert process.stderr is not None
+    stderr = process.stderr.read()
+    process.wait(timeout=5)
+
+    assert process.returncode == 0, stderr
+    assert stderr == ""
+    assert handler.requests == [("GET", "/v1/batches/batch_123")]

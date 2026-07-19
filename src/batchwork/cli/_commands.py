@@ -14,7 +14,7 @@ from typing import NoReturn, TypeVar
 
 import click
 
-from batchwork.types import BatchProvider, BatchResult, BatchStatus
+from batchwork.types import BatchProvider, BatchResult, BatchSnapshot, BatchStatus
 
 from ._config import API_KEY_ENV, ConfigError, load_config, registry_path, select_profile
 from ._contract import (
@@ -32,6 +32,7 @@ from ._contract import (
     RegistryCheckEnvelope,
     RegistryPrunePlanEnvelope,
     ResultEnvelope,
+    ResultListEnvelope,
     RunEnvelope,
     SnapshotEnvelope,
     serialize_envelope,
@@ -40,10 +41,13 @@ from ._failures import (
     CliFailure,
     CliUsageError,
     FailureContext,
+    InterruptionRequested,
+    QuietBrokenPipe,
     TerminationRequested,
     configuration_failure,
     internal_failure,
     job_state_failure,
+    output_failure,
     usage_failure,
 )
 from ._input import INPUT_FORMATS
@@ -63,6 +67,7 @@ from ._lifecycle import (
     unsuccessful,
     wait_job,
 )
+from ._output import JsonResultSpool
 from ._registry import (
     CURRENT_SCHEMA_VERSION,
     RegistryIntegrityError,
@@ -147,8 +152,12 @@ class ConfigAwareGroup(click.Group):
             _emit_failure(failure, _context_output_mode(ctx))
         except click.UsageError as error:
             _emit_failure(usage_failure(error, _context_operation(ctx)), _context_output_mode(ctx))
-        except (KeyboardInterrupt, click.Abort):
-            failure = CliFailure(
+        except BrokenPipeError:
+            raise QuietBrokenPipe from None
+        except (InterruptionRequested, KeyboardInterrupt, click.Abort):
+            from ._lifecycle import active_signal_failure
+
+            failure = active_signal_failure(interrupted=True) or CliFailure(
                 ErrorEnvelope(
                     error=ErrorDetail(
                         code="interrupted",
@@ -162,7 +171,9 @@ class ConfigAwareGroup(click.Group):
             )
             _emit_failure(failure, _context_output_mode(ctx))
         except TerminationRequested:
-            failure = CliFailure(
+            from ._lifecycle import active_signal_failure
+
+            failure = active_signal_failure(interrupted=False) or CliFailure(
                 ErrorEnvelope(
                     error=ErrorDetail(
                         code="terminated",
@@ -279,6 +290,32 @@ def _lifecycle_options(
 def _fail_lifecycle(failure: LifecycleFailure, mode: OutputMode) -> None:
     click.echo(render_lifecycle_error(failure, mode), nl=False, err=True)
     raise click.exceptions.Exit(failure.exit_code)
+
+
+def _fail_output(
+    error: OSError,
+    mode: OutputMode,
+    operation: str,
+    resolved: ResolvedJob | None = None,
+    *,
+    records_emitted: int = 0,
+) -> NoReturn:
+    if isinstance(error, BrokenPipeError):
+        raise QuietBrokenPipe from None
+    _emit_failure(
+        output_failure(
+            FailureContext(
+                operation=operation,
+                provider=resolved.provider if resolved is not None else None,
+                job=resolved.machine_job if resolved is not None else None,
+                routing_fingerprint=(
+                    resolved.machine_fingerprint if resolved is not None else None
+                ),
+            ),
+            records_emitted=records_emitted,
+        ),
+        mode,
+    )
 
 
 def _fail_unsuccessful(result: LifecycleResult, operation: str, mode: OutputMode) -> None:
@@ -621,6 +658,9 @@ def run_text(
 ) -> None:
     """Run canonical text requests from SOURCE."""
     mode = _output_mode(root, streaming=True)
+    spool: JsonResultSpool | None = None
+    prepared_resolved: ResolvedJob | None = None
+    records_emitted = 0
     submit_options = SubmitTextOptions(
         source=source,
         model=model,
@@ -648,9 +688,11 @@ def run_text(
     )
 
     async def execute() -> tuple[SubmissionResult, LifecycleResult, LifecycleResult]:
+        nonlocal spool, prepared_resolved, records_emitted
         submission = await execute_submit_text(root, submit_options)
         if mode is not OutputMode.JSON or submission.error is not None:
             click.echo(render_job(submission.job, mode), nl=False)
+            records_emitted += 1
         if submission.error is not None:
             click.echo(render_error(submission.error, mode), nl=False, err=True)
             raise click.exceptions.Exit(8)
@@ -669,39 +711,84 @@ def run_text(
                 ),
                 nl=False,
             )
+            records_emitted += 1
+        elif mode is OutputMode.JSON:
+            prepared_resolved = waited.resolved
+            spool = JsonResultSpool(
+                RunEnvelope(job=submission.job, snapshot=waited.snapshot, results=[])
+            )
 
         def emit_result(_resolved: ResolvedJob, item: BatchResult) -> None:
+            nonlocal records_emitted
             if mode is OutputMode.JSONL:
                 click.echo(
                     serialize_envelope(
-                        ResultEnvelope(job=waited.resolved.machine_job, result=item)
+                        ResultEnvelope(
+                            job=waited.resolved.machine_job,
+                            routing_fingerprint=waited.resolved.machine_fingerprint,
+                            result=item,
+                        )
                     ),
                     nl=False,
                 )
+                records_emitted += 1
+            elif mode is OutputMode.JSON:
+                if spool is None:
+                    raise RuntimeError("batchwork: JSON run spool was not prepared")
+                spool.append(item)
+
+        def reset_buffer() -> None:
+            if spool is not None:
+                spool.reset()
 
         collected = await results_job(
             root,
             lifecycle,
-            on_result=emit_result if mode is OutputMode.JSONL else None,
+            on_result=emit_result if mode in {OutputMode.JSON, OutputMode.JSONL} else None,
+            on_retry=reset_buffer if mode is OutputMode.JSON else None,
+            output_is_streaming=mode is OutputMode.JSONL,
+            initial_records_emitted=records_emitted if mode is OutputMode.JSONL else 0,
         )
         return submission, waited, collected
 
     try:
-        submission, waited, collected = asyncio.run(execute())
+        _submission, waited, collected = asyncio.run(execute())
     except LifecycleFailure as failure:
+        if spool is not None:
+            spool.close()
+        if records_emitted:
+            detail = failure.envelope.error
+            failure = LifecycleFailure(
+                ErrorEnvelope(
+                    error=detail.model_copy(
+                        update={
+                            "partial_output": True,
+                            "records_emitted": detail.records_emitted or records_emitted,
+                        }
+                    )
+                )
+            )
         _fail_lifecycle(failure, mode)
         return
-    if mode is OutputMode.JSON:
-        click.echo(
-            serialize_envelope(
-                RunEnvelope(
-                    job=submission.job,
-                    snapshot=waited.snapshot,
-                    results=collected.results or [],
-                )
-            ),
-            nl=False,
+    except OSError as error:
+        if spool is not None:
+            spool.close()
+        _fail_output(
+            error,
+            mode,
+            "run",
+            prepared_resolved,
+            records_emitted=records_emitted,
         )
+    if mode is OutputMode.JSON:
+        if spool is None:
+            raise RuntimeError("batchwork: JSON run spool was not prepared")
+        try:
+            spool.publish()
+        except OSError as error:
+            _fail_output(error, mode, "run", waited.resolved)
+        finally:
+            spool.close()
     elif mode is OutputMode.HUMAN:
         click.echo(render_snapshot(waited, mode), nl=False)
         click.echo(render_results(collected, mode), nl=False)
@@ -820,33 +907,82 @@ def results(
     options = _lifecycle_options(
         job, base_url, api_key_env, header, header_env, provider, save, name, "results"
     )
+    spool: JsonResultSpool | None = None
+    prepared_resolved: ResolvedJob | None = None
+    records_emitted = 0
+    retrieval_complete = False
+
+    def prepare_buffer(resolved: ResolvedJob, _snapshot: BatchSnapshot) -> None:
+        nonlocal spool, prepared_resolved
+        prepared_resolved = resolved
+        if mode is OutputMode.JSON and spool is None:
+            spool = JsonResultSpool(
+                ResultListEnvelope(
+                    job=resolved.machine_job,
+                    routing_fingerprint=resolved.machine_fingerprint,
+                    results=[],
+                )
+            )
+
+    def reset_buffer() -> None:
+        if spool is not None:
+            spool.reset()
 
     def emit_result(resolved: ResolvedJob, item: BatchResult) -> None:
-        machine_job = resolved.machine_job
-        fingerprint = resolved.machine_fingerprint
-        click.echo(
-            serialize_envelope(
-                ResultEnvelope(
-                    job=machine_job,
-                    routing_fingerprint=fingerprint,
-                    result=item,
-                )
-            ),
-            nl=False,
-        )
+        nonlocal records_emitted
+        if mode is OutputMode.JSON:
+            if spool is None:
+                raise RuntimeError("batchwork: JSON result spool was not prepared")
+            spool.append(item)
+        else:
+            click.echo(
+                serialize_envelope(
+                    ResultEnvelope(
+                        job=resolved.machine_job,
+                        routing_fingerprint=resolved.machine_fingerprint,
+                        result=item,
+                    )
+                ),
+                nl=False,
+            )
+            records_emitted += 1
 
     try:
         result = asyncio.run(
             results_job(
                 root,
                 options,
-                on_result=emit_result if mode is OutputMode.JSONL else None,
+                on_result=emit_result if mode in {OutputMode.JSON, OutputMode.JSONL} else None,
+                on_snapshot=prepare_buffer if mode is OutputMode.JSON else None,
+                on_retry=reset_buffer if mode is OutputMode.JSON else None,
+                output_is_streaming=mode is OutputMode.JSONL,
             )
         )
+        retrieval_complete = True
     except LifecycleFailure as failure:
         _fail_lifecycle(failure, mode)
         return
-    if mode is not OutputMode.JSONL:
+    except OSError as error:
+        _fail_output(
+            error,
+            mode,
+            "results",
+            prepared_resolved,
+            records_emitted=records_emitted,
+        )
+    finally:
+        if spool is not None and not retrieval_complete:
+            spool.close()
+    if mode is OutputMode.JSON:
+        if spool is None:
+            raise RuntimeError("batchwork: JSON result spool was not prepared")
+        try:
+            spool.publish()
+        except OSError as error:
+            _fail_output(error, mode, "results", result.resolved)
+        finally:
+            spool.close()
+    elif mode is not OutputMode.JSONL:
         click.echo(render_results(result, mode), nl=False)
     _fail_unsuccessful(result, "results", mode)
 

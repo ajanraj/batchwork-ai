@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import sqlite3
+import ssl
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypeVar
 
+import httpx
+
+from batchwork._provider_failure import ProviderFailureError, ProviderFailureKind
 from batchwork.client import Batchwork
 from batchwork.types import (
     BatchProvider,
@@ -35,6 +41,8 @@ from ._failures import (
     CliFailure,
     CliUsageError,
     FailureContext,
+    InterruptionRequested,
+    TerminationRequested,
     job_state_failure,
     provider_failure,
 )
@@ -56,6 +64,11 @@ from ._submit_text import (
     resolve_registered_route,
     resolve_route_descriptor,
 )
+
+_READ_ATTEMPTS = 3
+_RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+_MAX_RETRY_DELAY_SECONDS = 60.0
+_ReadResult = TypeVar("_ReadResult")
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +117,109 @@ class LifecycleResult:
 
 class LifecycleFailure(CliFailure):
     pass
+
+
+@dataclass(slots=True)
+class _ActiveLifecycle:
+    operation: str
+    resolved: ResolvedJob
+    snapshot: BatchSnapshot | None = None
+    records_emitted: int = 0
+    item_successes: int = 0
+    item_failures: int = 0
+
+
+_active_lifecycle: _ActiveLifecycle | None = None
+
+
+def _activate(operation: str, resolved: ResolvedJob) -> _ActiveLifecycle:
+    global _active_lifecycle
+    active = _ActiveLifecycle(operation, resolved)
+    _active_lifecycle = active
+    return active
+
+
+def active_signal_failure(*, interrupted: bool) -> LifecycleFailure | None:
+    active = _active_lifecycle
+    if active is None:
+        return None
+    error = InterruptionRequested() if interrupted else TerminationRequested()
+    return _signal_failure(
+        error,
+        active.operation,
+        active.resolved,
+        active.snapshot,
+        records_emitted=active.records_emitted,
+        item_successes=active.item_successes,
+        item_failures=active.item_failures,
+    )
+
+
+def _cause_chain(error: BaseException) -> list[BaseException]:
+    causes: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in causes:
+        causes.append(current)
+        current = current.__cause__ or current.__context__
+    return causes
+
+
+def _retryable_read_failure(error: BaseException) -> bool:
+    if not isinstance(error, ProviderFailureError):
+        return False
+    failure = error.failure
+    if failure.kind is ProviderFailureKind.UNAVAILABLE:
+        return failure.status_code in _RETRYABLE_HTTP_STATUSES
+    if failure.kind is not ProviderFailureKind.TRANSPORT:
+        return False
+    causes = _cause_chain(error)
+    if any(isinstance(cause, ssl.SSLCertVerificationError) for cause in causes):
+        return False
+    return any(
+        isinstance(
+            cause,
+            (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.ReadError,
+                httpx.ReadTimeout,
+                httpx.RemoteProtocolError,
+            ),
+        )
+        for cause in causes
+    )
+
+
+def _retry_delay(error: BaseException, retry_index: int) -> float:
+    if isinstance(error, ProviderFailureError):
+        retry_after = error.failure.retry_after_seconds
+        if retry_after is not None and retry_after <= _MAX_RETRY_DELAY_SECONDS:
+            return float(retry_after)
+    ceiling = min(0.25 * (2**retry_index), _MAX_RETRY_DELAY_SECONDS)
+    return random.uniform(ceiling / 2, ceiling)
+
+
+async def _retry_read(
+    read: Callable[[], Awaitable[_ReadResult]],
+    *,
+    deadline: float | None = None,
+) -> _ReadResult:
+    for attempt in range(_READ_ATTEMPTS):
+        try:
+            return await read()
+        except Exception as error:
+            if attempt + 1 == _READ_ATTEMPTS or not _retryable_read_failure(error):
+                raise
+            delay = _retry_delay(error, attempt)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError from None
+                if delay >= remaining:
+                    await asyncio.sleep(remaining)
+                    raise TimeoutError from None
+            await asyncio.sleep(delay)
+    raise RuntimeError("batchwork: exhausted retry loop")
 
 
 def duration_seconds(duration: str | None) -> float | None:
@@ -349,6 +465,46 @@ def _recovery_command(operation: str, resolved: ResolvedJob) -> list[str]:
     return command
 
 
+def _signal_failure(
+    error: InterruptionRequested | TerminationRequested,
+    operation: str,
+    resolved: ResolvedJob,
+    snapshot: BatchSnapshot | None = None,
+    *,
+    records_emitted: int = 0,
+    item_successes: int = 0,
+    item_failures: int = 0,
+) -> LifecycleFailure:
+    interrupted = isinstance(error, InterruptionRequested)
+    if snapshot is not None and not records_emitted and operation != "results":
+        item_successes = snapshot.request_counts.completed
+        item_failures = snapshot.request_counts.failed
+    detail = ErrorDetail(
+        code="interrupted" if interrupted else "terminated",
+        category="interrupted" if interrupted else "terminated",
+        message=(
+            f'Batchwork was interrupted; remote job "{resolved.machine_job}" was not cancelled.'
+            if interrupted
+            else f'Batchwork was terminated; remote job "{resolved.machine_job}" was not cancelled.'
+        ),
+        exit_code=130 if interrupted else 143,
+        retryable=False,
+        operation=operation,
+        provider=resolved.provider,
+        job=resolved.machine_job,
+        routing_fingerprint=resolved.machine_fingerprint,
+        partial_output=True if records_emitted else None,
+        records_emitted=records_emitted if records_emitted else None,
+        item_successes=item_successes,
+        item_failures=item_failures,
+        recovery=Recovery(
+            action="resume_operation",
+            command=_recovery_command(operation, resolved),
+        ),
+    )
+    return LifecycleFailure(ErrorEnvelope(error=detail))
+
+
 def _persist_or_fail(operation: str, resolved: ResolvedJob, snapshot: BatchSnapshot) -> None:
     try:
         _persist(resolved, snapshot)
@@ -454,14 +610,18 @@ def _adopt_if_requested(
 
 async def status_job(root: RootOptions, options: LifecycleOptions) -> LifecycleResult:
     resolved = resolve_job(root, options)
+    active = _activate("status", resolved)
     try:
         async with Batchwork() as client:
-            job = await client.get_batch(_ref(resolved))
+            job = await _retry_read(lambda: client.get_batch(_ref(resolved)))
+    except (InterruptionRequested, TerminationRequested) as error:
+        raise _signal_failure(error, "status", resolved) from None
     except Exception as error:
         failure = _lifecycle_provider_failure(error, "status", resolved)
         if failure is None:
             raise
         raise failure from error
+    active.snapshot = job.snapshot
     _persist_or_fail("status", resolved, job.snapshot)
     resolved = _adopt_if_requested(root, options, resolved, job.snapshot, "status")
     return LifecycleResult(resolved, job.snapshot)
@@ -475,13 +635,19 @@ async def wait_job(
     timeout_seconds: float | None = None,
 ) -> LifecycleResult:
     resolved = resolve_job(root, options)
+    active = _activate("wait", resolved)
     started = time.monotonic()
+    deadline = started + timeout_seconds if timeout_seconds is not None else None
+    snapshot: BatchSnapshot | None = None
     try:
         try:
             async with asyncio.timeout(timeout_seconds):
                 async with Batchwork() as client:
-                    job = await client.get_batch(_ref(resolved))
+                    job = await _retry_read(
+                        lambda: client.get_batch(_ref(resolved)), deadline=deadline
+                    )
                     snapshot = job.snapshot
+                    active.snapshot = snapshot
                     _persist_or_fail("wait", resolved, snapshot)
                     while not is_terminal_status(snapshot.status):
                         if timeout_seconds is None:
@@ -490,8 +656,11 @@ async def wait_job(
                             remaining = timeout_seconds - (time.monotonic() - started)
                             sleep_for = min(poll_interval, max(0.0, remaining))
                         await asyncio.sleep(sleep_for)
-                        snapshot = await job.poll()
+                        snapshot = await _retry_read(job.poll, deadline=deadline)
+                        active.snapshot = snapshot
                         _persist_or_fail("wait", resolved, snapshot)
+        except (InterruptionRequested, TerminationRequested) as error:
+            raise _signal_failure(error, "wait", resolved, snapshot) from None
         except Exception as error:
             failure = _lifecycle_provider_failure(error, "wait", resolved)
             if failure is None:
@@ -512,6 +681,12 @@ async def wait_job(
                     provider=resolved.provider,
                     job=resolved.machine_job,
                     routing_fingerprint=resolved.machine_fingerprint,
+                    item_successes=(
+                        snapshot.request_counts.completed if snapshot is not None else None
+                    ),
+                    item_failures=(
+                        snapshot.request_counts.failed if snapshot is not None else None
+                    ),
                     recovery=Recovery(
                         action="resume_wait",
                         command=_recovery_command("wait", resolved),
@@ -519,6 +694,8 @@ async def wait_job(
                 )
             )
         ) from None
+    if snapshot is None:
+        raise RuntimeError("batchwork: wait completed without a snapshot")
     resolved = _adopt_if_requested(root, options, resolved, snapshot, "wait")
     return LifecycleResult(resolved, snapshot)
 
@@ -553,30 +730,85 @@ async def results_job(
     options: LifecycleOptions,
     *,
     on_result: Callable[[ResolvedJob, BatchResult], None] | None = None,
+    on_snapshot: Callable[[ResolvedJob, BatchSnapshot], None] | None = None,
+    on_retry: Callable[[], None] | None = None,
+    output_is_streaming: bool = False,
+    initial_records_emitted: int = 0,
 ) -> LifecycleResult:
     resolved = resolve_job(root, options)
+    active = _activate("results", resolved)
+    active.records_emitted = initial_records_emitted
     results: list[BatchResult] | None = [] if on_result is None else None
     item_successes = 0
     item_failures = 0
     snapshot: BatchSnapshot | None = None
+    job = None
     try:
         async with Batchwork() as client:
-            job = await client.get_batch(_ref(resolved))
-            snapshot = job.snapshot
-            _persist_or_fail("results", resolved, job.snapshot)
-            if not is_terminal_status(job.status):
-                raise _nonterminal_failure(resolved, job.snapshot)
-            async for item in job._results_from_current_snapshot():
-                if item.status is BatchResultStatus.SUCCEEDED:
-                    item_successes += 1
-                else:
-                    item_failures += 1
-                if on_result is None:
-                    if results is None:
-                        raise RuntimeError("batchwork: missing buffered result collection")
-                    results.append(item)
-                else:
-                    on_result(resolved, item)
+            for attempt in range(_READ_ATTEMPTS):
+                try:
+                    job = await client.get_batch(_ref(resolved))
+                    snapshot = job.snapshot
+                    active.snapshot = snapshot
+                    _persist_or_fail("results", resolved, job.snapshot)
+                    if not is_terminal_status(job.status):
+                        raise _nonterminal_failure(resolved, job.snapshot)
+                    if on_snapshot is not None:
+                        on_snapshot(resolved, snapshot)
+                    async for item in job._results_from_current_snapshot():
+                        if on_result is None:
+                            if results is None:
+                                raise RuntimeError("batchwork: missing buffered result collection")
+                            results.append(item)
+                        else:
+                            on_result(resolved, item)
+                        if item.status is BatchResultStatus.SUCCEEDED:
+                            item_successes += 1
+                        else:
+                            item_failures += 1
+                        active.records_emitted = initial_records_emitted + (
+                            item_successes + item_failures if output_is_streaming else 0
+                        )
+                        active.item_successes = item_successes
+                        active.item_failures = item_failures
+                except (InterruptionRequested, TerminationRequested):
+                    raise
+                except Exception as error:
+                    result_records_emitted = (
+                        item_successes + item_failures if output_is_streaming else 0
+                    )
+                    can_restart = result_records_emitted == 0
+                    if (
+                        attempt + 1 < _READ_ATTEMPTS
+                        and can_restart
+                        and _retryable_read_failure(error)
+                    ):
+                        await asyncio.sleep(_retry_delay(error, attempt))
+                        item_successes = 0
+                        item_failures = 0
+                        active.records_emitted = initial_records_emitted
+                        active.item_successes = 0
+                        active.item_failures = 0
+                        if results is not None:
+                            results.clear()
+                        if on_retry is not None:
+                            on_retry()
+                        continue
+                    raise
+                break
+    except (InterruptionRequested, TerminationRequested) as error:
+        records_emitted = initial_records_emitted + (
+            item_successes + item_failures if output_is_streaming else 0
+        )
+        raise _signal_failure(
+            error,
+            "results",
+            resolved,
+            snapshot,
+            records_emitted=records_emitted,
+            item_successes=item_successes,
+            item_failures=item_failures,
+        ) from None
     except Exception as error:
         if (
             snapshot is not None
@@ -599,13 +831,16 @@ async def results_job(
             "results",
             resolved,
             result_stream=True,
-            records_emitted=item_successes + item_failures,
+            records_emitted=initial_records_emitted
+            + (item_successes + item_failures if output_is_streaming else 0),
             item_successes=item_successes,
             item_failures=item_failures,
         )
         if failure is None:
             raise
         raise failure from error
+    if job is None:
+        raise RuntimeError("batchwork: results completed without a provider job")
     resolved = _adopt_if_requested(root, options, resolved, job.snapshot, "results")
     return LifecycleResult(
         resolved,
@@ -619,6 +854,8 @@ async def results_job(
 
 async def cancel_job(root: RootOptions, options: LifecycleOptions) -> LifecycleResult:
     resolved = resolve_job(root, options)
+    active = _activate("cancel", resolved)
+    snapshot: BatchSnapshot | None = None
     try:
         async with Batchwork() as client:
             job = await client.get_batch(_ref(resolved))
@@ -635,6 +872,9 @@ async def cancel_job(root: RootOptions, options: LifecycleOptions) -> LifecycleR
                     raise failure from error
             else:
                 snapshot = job.snapshot
+            active.snapshot = snapshot
+    except (InterruptionRequested, TerminationRequested) as error:
+        raise _signal_failure(error, "cancel", resolved, snapshot) from None
     except Exception as error:
         if isinstance(error, LifecycleFailure):
             raise
@@ -642,6 +882,8 @@ async def cancel_job(root: RootOptions, options: LifecycleOptions) -> LifecycleR
         if failure is None:
             raise
         raise failure from error
+    if snapshot is None:
+        raise RuntimeError("batchwork: cancel completed without a snapshot")
     _persist_or_fail("cancel", resolved, snapshot)
     resolved = _adopt_if_requested(root, options, resolved, snapshot, "cancel")
     return LifecycleResult(resolved, snapshot)
