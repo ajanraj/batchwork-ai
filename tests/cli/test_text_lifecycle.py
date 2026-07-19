@@ -15,6 +15,8 @@ import pytest
 class _LifecycleHandler(BaseHTTPRequestHandler):
     requests: ClassVar[list[tuple[str, str]]] = []
     statuses: ClassVar[list[str]] = []
+    result_documents: ClassVar[list[dict[str, object]]] = []
+    result_gate: ClassVar[threading.Event | None] = None
 
     def _json(self, document: object) -> None:
         encoded = json.dumps(document).encode()
@@ -61,23 +63,14 @@ class _LifecycleHandler(BaseHTTPRequestHandler):
                 }
             )
         elif self.path == "/v1/files/file-output/content":
-            encoded = (
-                json.dumps(
-                    {
-                        "custom_id": "request-0",
-                        "response": {
-                            "status_code": 200,
-                            "body": {"choices": [{"message": {"content": "hello"}}]},
-                        },
-                    }
-                )
-                + "\n"
-            ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/jsonl")
-            self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
-            self.wfile.write(encoded)
+            for index, document in enumerate(self.result_documents):
+                self.wfile.write((json.dumps(document) + "\n").encode())
+                self.wfile.flush()
+                if index == 0 and self.result_gate is not None:
+                    self.result_gate.wait(timeout=2)
         else:
             self.send_error(404)
 
@@ -89,6 +82,16 @@ class _LifecycleHandler(BaseHTTPRequestHandler):
 def lifecycle_provider() -> tuple[str, type[_LifecycleHandler]]:
     _LifecycleHandler.requests = []
     _LifecycleHandler.statuses = ["completed"]
+    _LifecycleHandler.result_documents = [
+        {
+            "custom_id": "request-0",
+            "response": {
+                "status_code": 200,
+                "body": {"choices": [{"message": {"content": "hello"}}]},
+            },
+        }
+    ]
+    _LifecycleHandler.result_gate = None
     server = ThreadingHTTPServer(("127.0.0.1", 0), _LifecycleHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -202,6 +205,37 @@ def test_installed_results_never_waits_for_nonterminal_job(
     assert handler.requests == [("GET", "/v1/batches/batch_123")]
 
 
+def test_installed_jsonl_results_flush_each_record_as_received(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    handler.result_documents = [
+        *handler.result_documents,
+        {
+            "custom_id": "request-1",
+            "response": {"status_code": 200, "body": {"choices": []}},
+        },
+    ]
+    handler.result_gate = threading.Event()
+    process = subprocess.Popen(
+        [_batchwork(), "--jsonl", "results", *_direct(base_url)],
+        cwd=tmp_path,
+        env=_environment(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    first = process.stdout.readline()
+    assert json.loads(first)["result"]["custom_id"] == "request-0"
+    assert process.poll() is None
+    handler.result_gate.set()
+    stdout, stderr = process.communicate(timeout=5)
+    assert process.returncode == 0, stderr
+    assert json.loads(stdout)["result"]["custom_id"] == "request-1"
+
+
 def test_installed_cancel_is_noop_for_terminal_job(
     tmp_path: Path,
     lifecycle_provider: tuple[str, type[_LifecycleHandler]],
@@ -239,7 +273,7 @@ def test_installed_status_accepts_saved_alias_and_bare_explicit_provider(
             *_direct(base_url),
             "--save",
             "--name",
-            "known-job",
+            "bw_team",
         ],
         cwd=tmp_path,
         env=_environment(),
@@ -258,7 +292,7 @@ def test_installed_status_accepts_saved_alias_and_bare_explicit_provider(
             "--registry",
             str(registry),
             "status",
-            "known-job",
+            "bw_team",
         ],
         cwd=tmp_path,
         env=_environment(),

@@ -134,8 +134,14 @@ class BatchJob:
             sleep_for = poll_interval if remaining is None else min(poll_interval, remaining)
             await asyncio.sleep(sleep_for)
 
-    async def results(self, *, refresh: bool = True) -> AsyncIterator[BatchResult]:
-        snapshot = await self.poll() if refresh else self.snapshot
+    async def results(self) -> AsyncIterator[BatchResult]:
+        self._ensure_open()
+        async for result in self._adapter.results(self.id, self._credentials):
+            self._ensure_open()
+            yield result
+
+    async def _results_from_current_snapshot(self) -> AsyncIterator[BatchResult]:
+        snapshot = self.snapshot
         if isinstance(self._adapter, _SnapshotResultsAdapter):
             results = self._adapter.results_from_snapshot(snapshot, self._credentials)
         else:
@@ -144,8 +150,8 @@ class BatchJob:
             self._ensure_open()
             yield result
 
-    async def collect(self, *, refresh: bool = True) -> list[BatchResult]:
-        return [result async for result in self.results(refresh=refresh)]
+    async def collect(self) -> list[BatchResult]:
+        return [result async for result in self.results()]
 
     async def cancel(self) -> BatchSnapshot:
         self._ensure_open()

@@ -12,13 +12,14 @@ from typing import TypeVar
 
 import click
 
-from batchwork.types import BatchProvider
+from batchwork.types import BatchProvider, BatchResult
 
 from ._contract import ResultEnvelope, RunEnvelope, SnapshotEnvelope, serialize_envelope
 from ._lifecycle import (
     LifecycleFailure,
     LifecycleOptions,
     LifecycleResult,
+    ResolvedJob,
     cancel_job,
     duration_seconds,
     render_lifecycle_error,
@@ -462,7 +463,28 @@ def run_text(
             poll_interval=poll_interval or 15.0,
             timeout_seconds=duration_seconds(timeout),
         )
-        collected = await results_job(root, lifecycle)
+        if mode is OutputMode.JSONL:
+            click.echo(
+                serialize_envelope(
+                    SnapshotEnvelope(job=waited.resolved.machine_job, snapshot=waited.snapshot)
+                ),
+                nl=False,
+            )
+
+        def emit_result(_resolved: ResolvedJob, item: BatchResult) -> None:
+            if mode is OutputMode.JSONL:
+                click.echo(
+                    serialize_envelope(
+                        ResultEnvelope(job=waited.resolved.machine_job, result=item)
+                    ),
+                    nl=False,
+                )
+
+        collected = await results_job(
+            root,
+            lifecycle,
+            on_result=emit_result if mode is OutputMode.JSONL else None,
+        )
         return submission, waited, collected
 
     try:
@@ -481,19 +503,7 @@ def run_text(
             ),
             nl=False,
         )
-    elif mode is OutputMode.JSONL:
-        click.echo(
-            serialize_envelope(
-                SnapshotEnvelope(job=waited.resolved.machine_job, snapshot=waited.snapshot)
-            ),
-            nl=False,
-        )
-        for item in collected.results or ():
-            click.echo(
-                serialize_envelope(ResultEnvelope(job=collected.resolved.machine_job, result=item)),
-                nl=False,
-            )
-    else:
+    elif mode is OutputMode.HUMAN:
         click.echo(render_snapshot(waited, mode), nl=False)
         click.echo(render_results(collected, mode), nl=False)
     if unsuccessful(collected):
@@ -609,12 +619,34 @@ def results(
     options = _lifecycle_options(
         job, base_url, api_key_env, header, header_env, provider, save, name
     )
+
+    def emit_result(resolved: ResolvedJob, item: BatchResult) -> None:
+        machine_job = resolved.machine_job
+        fingerprint = resolved.machine_fingerprint
+        click.echo(
+            serialize_envelope(
+                ResultEnvelope(
+                    job=machine_job,
+                    routing_fingerprint=fingerprint,
+                    result=item,
+                )
+            ),
+            nl=False,
+        )
+
     try:
-        result = asyncio.run(results_job(root, options))
+        result = asyncio.run(
+            results_job(
+                root,
+                options,
+                on_result=emit_result if mode is OutputMode.JSONL else None,
+            )
+        )
     except LifecycleFailure as failure:
         _fail_lifecycle(failure, mode)
         return
-    click.echo(render_results(result, mode), nl=False)
+    if mode is not OutputMode.JSONL:
+        click.echo(render_results(result, mode), nl=False)
     if unsuccessful(result):
         raise click.exceptions.Exit(6)
 
