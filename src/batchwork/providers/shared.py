@@ -106,10 +106,10 @@ async def request(
                 data=data,
                 follow_redirects=False,
             )
-    except httpx.HTTPError:
+    except httpx.HTTPError as error:
         raise ProviderFailureError(
             "batchwork: provider request failed during transport.", transport_failure()
-        ) from None
+        ) from error
     if not 200 <= response.status_code < 300:
         raise ProviderFailureError(
             f"batchwork: {method} {url} failed with {response.status_code}", http_failure(response)
@@ -146,10 +146,10 @@ async def stream_request(
         ) as response:
             _raise_for_provider_status(response, method, url)
             yield response
-    except httpx.HTTPError:
+    except httpx.HTTPError as error:
         raise ProviderFailureError(
             "batchwork: provider request failed during transport.", transport_failure()
-        ) from None
+        ) from error
 
 
 async def request_json(

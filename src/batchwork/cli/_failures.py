@@ -53,6 +53,14 @@ class TerminationRequested(Exception):
     """Raised by the installed CLI's SIGTERM handler."""
 
 
+class InterruptionRequested(Exception):
+    """Raised by the installed CLI's SIGINT handler."""
+
+
+class QuietBrokenPipe(Exception):
+    """Requests a successful quiet exit after downstream closure."""
+
+
 class CliUsageError(click.UsageError):
     """Click usage failure with a stable symbolic code."""
 
@@ -134,7 +142,8 @@ def provider_failure(
         code = "result_stream_failed"
         message = (
             "Provider result retrieval ended before the complete result set was received. "
-            "Replay starts from the beginning; deduplicate by job identity and custom_id."
+            "Replay starts from the beginning; deduplicate by canonical job identity and "
+            "custom_id."
         )
     if cancellation_refresh:
         code = "cancellation_refresh_failed"
@@ -242,6 +251,33 @@ def internal_failure(operation: str) -> CliFailure:
                 exit_code=1,
                 retryable=False,
                 operation=operation,
+            )
+        )
+    )
+
+
+def output_failure(
+    context: FailureContext,
+    *,
+    records_emitted: int = 0,
+) -> CliFailure:
+    return CliFailure(
+        ErrorEnvelope(
+            error=ErrorDetail(
+                code="output_write_failed",
+                category="local_state",
+                message=(
+                    "Batchwork could not preserve the requested local output. "
+                    "The remote job is unchanged."
+                ),
+                exit_code=8,
+                retryable=False,
+                operation=context.operation,
+                provider=context.provider,
+                job=context.job,
+                routing_fingerprint=context.routing_fingerprint,
+                partial_output=True if records_emitted else None,
+                records_emitted=records_emitted if records_emitted else None,
             )
         )
     )
