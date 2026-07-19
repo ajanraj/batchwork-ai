@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"image_manifest","job":"bw_0123456789abcdef0123456789abcdef","images":[{"path":"request-0--c1185fd39a30--1.png","custom_id":"request-0","image_index":1,"source_kind":"url","media_type":"image/png","byte_count":68,"sha256":"2222222222222222222222222222222222222222222222222222222222222222"}]}

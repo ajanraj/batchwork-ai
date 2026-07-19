@@ -1,5 +1,7 @@
 """Unified async batch API for AI providers."""
 
+from importlib.metadata import version
+
 from .client import Batchwork
 from .errors import (
     BatchClosedError,
@@ -129,7 +131,7 @@ from .types import (
     utc_datetime,
 )
 
-__version__ = "0.1.1"
+__version__ = version("batchwork-ai")
 
 __all__ = [
     "TERMINAL_STATUSES",

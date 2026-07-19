@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"config_validation","path":"/home/example/.config/batchwork/config.toml","exists":true,"valid":true,"config_schema_version":1,"profiles":["work"],"default_profile":"work","credentials_read":false}

@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"registry_prune_plan","path":"/home/example/.local/share/batchwork/registry.sqlite3","older_than":"30d","cutoff_at":"2026-07-19T12:00:00Z","candidate_records":12,"committed":false,"remote_jobs_changed":false}
