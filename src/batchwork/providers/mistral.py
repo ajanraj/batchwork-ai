@@ -126,11 +126,18 @@ class MistralAdapter:
         self, id: str, credentials: ProviderCredentials
     ) -> AsyncIterator[BatchResult]:
         snapshot = await self.retrieve(id, credentials)
+        async for result in self.results_from_snapshot(snapshot, credentials):
+            yield result
+
+    async def results_from_snapshot(
+        self, snapshot: BatchSnapshot, credentials: ProviderCredentials
+    ) -> AsyncIterator[BatchResult]:
         output = snapshot.raw.get("output_file") if isinstance(snapshot.raw, Mapping) else None
         error = snapshot.raw.get("error_file") if isinstance(snapshot.raw, Mapping) else None
         if not isinstance(output, str) and not isinstance(error, str):
             raise BatchworkError(
-                f'batchwork: results are not ready for batch "{id}" (status: {snapshot.status}).'
+                f'batchwork: results are not ready for batch "{snapshot.id}" '
+                f"(status: {snapshot.status})."
             )
         url = self._base(credentials)
         headers = self._headers(credentials)

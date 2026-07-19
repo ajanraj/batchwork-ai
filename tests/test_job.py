@@ -46,6 +46,31 @@ class FakeAdapter:
         self.cancelled = True
 
 
+class SnapshotResultsAdapter(FakeAdapter):
+    def __init__(self) -> None:
+        super().__init__([BatchStatus.COMPLETED])
+        self.retrieve_calls = 0
+        self.result_calls = 0
+        self.result_snapshot: BatchSnapshot | None = None
+
+    async def retrieve(self, id: str, credentials: ProviderCredentials) -> BatchSnapshot:
+        self.retrieve_calls += 1
+        return await super().retrieve(id, credentials)
+
+    async def results(
+        self, id: str, credentials: ProviderCredentials
+    ) -> AsyncIterator[BatchResult]:
+        self.result_calls += 1
+        raise AssertionError("snapshot-aware lifecycle path must not call results()")
+        yield BatchResult(custom_id="unused", status=BatchResultStatus.SUCCEEDED)
+
+    async def results_from_snapshot(
+        self, value: BatchSnapshot, credentials: ProviderCredentials
+    ) -> AsyncIterator[BatchResult]:
+        self.result_snapshot = value
+        yield BatchResult(custom_id="a", status=BatchResultStatus.SUCCEEDED, text="hello")
+
+
 class BlockingRetrieveAdapter(FakeAdapter):
     def __init__(self, retrieves_before_block: int) -> None:
         super().__init__([BatchStatus.IN_PROGRESS] * retrieves_before_block)
@@ -215,8 +240,20 @@ async def test_results_delegate_for_every_batch_state(status: BatchStatus) -> No
 
 
 @pytest.mark.asyncio
+async def test_results_refresh_once_and_reuse_snapshot_for_output() -> None:
+    adapter = SnapshotResultsAdapter()
+    job = BatchJob(adapter, ProviderCredentials(), snapshot(BatchStatus.IN_PROGRESS))
+
+    assert [result.text for result in await job.collect()] == ["hello"]
+    assert adapter.retrieve_calls == 1
+    assert adapter.result_calls == 0
+    assert adapter.result_snapshot is job.snapshot
+    assert job.status is BatchStatus.COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_collect_cancel_and_owner_close() -> None:
-    adapter = FakeAdapter([BatchStatus.CANCELLING])
+    adapter = FakeAdapter([BatchStatus.COMPLETED, BatchStatus.CANCELLING])
     open_state = True
 
     def ensure_open() -> None:

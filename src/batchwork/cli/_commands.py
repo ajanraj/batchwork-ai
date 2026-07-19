@@ -14,8 +14,23 @@ import click
 
 from batchwork.types import BatchProvider
 
+from ._contract import ResultEnvelope, RunEnvelope, SnapshotEnvelope, serialize_envelope
+from ._lifecycle import (
+    LifecycleFailure,
+    LifecycleOptions,
+    LifecycleResult,
+    cancel_job,
+    duration_seconds,
+    render_lifecycle_error,
+    render_results,
+    render_snapshot,
+    results_job,
+    status_job,
+    unsuccessful,
+    wait_job,
+)
 from ._state import OutputMode, RootOptions
-from ._submit_text import SubmitTextOptions, render_error, render_job
+from ._submit_text import SubmissionResult, SubmitTextOptions, render_error, render_job
 from ._submit_text import submit_text as execute_submit_text
 
 CommandFunction = TypeVar("CommandFunction", bound=Callable[..., object])
@@ -99,6 +114,32 @@ def _foundation_only() -> None:
         "This development build provides CLI help and schema contracts only; "
         "use --help to inspect the available command surface."
     )
+
+
+def _output_mode(root: RootOptions, *, streaming: bool = False) -> OutputMode:
+    if root.output_mode is not None:
+        return root.output_mode
+    if sys.stdout.isatty():
+        return OutputMode.HUMAN
+    return OutputMode.JSONL if streaming else OutputMode.JSON
+
+
+def _lifecycle_options(
+    job: str,
+    base_url: str | None,
+    api_key_env: str | None,
+    header: tuple[str, ...],
+    header_env: tuple[str, ...],
+    provider: str | None,
+    save: bool,
+    name: str | None,
+) -> LifecycleOptions:
+    return LifecycleOptions(job, base_url, api_key_env, header, header_env, provider, save, name)
+
+
+def _fail_lifecycle(failure: LifecycleFailure, mode: OutputMode) -> None:
+    click.echo(render_lifecycle_error(failure, mode), nl=False, err=True)
+    raise click.exceptions.Exit(failure.exit_code)
 
 
 def _creation_options(function: CommandFunction) -> CommandFunction:
@@ -349,9 +390,114 @@ def run() -> None:
 @_creation_options
 @_text_options
 @_wait_options
-def run_text(**_: object) -> None:
+@click.pass_obj
+def run_text(
+    root: RootOptions,
+    source: Path,
+    model: str | None,
+    input_format: str | None,
+    name: str | None,
+    batch_metadata: tuple[str, ...],
+    provider_options: str | None,
+    provider_options_file: Path | None,
+    allow_large_batch: bool,
+    base_url: str | None,
+    api_key_env: str | None,
+    header: tuple[str, ...],
+    header_env: tuple[str, ...],
+    system: str | None,
+    max_output_tokens: int | None,
+    temperature: float | None,
+    top_p: float | None,
+    top_k: int | None,
+    seed: int | None,
+    frequency_penalty: float | None,
+    presence_penalty: float | None,
+    stop: tuple[str, ...],
+    tool_choice: str | None,
+    endpoint: str | None,
+    timeout: str | None,
+    poll_interval: float | None,
+) -> None:
     """Run canonical text requests from SOURCE."""
-    _foundation_only()
+    mode = _output_mode(root, streaming=True)
+    submit_options = SubmitTextOptions(
+        source=source,
+        model=model,
+        input_format=input_format,
+        name=name,
+        batch_metadata=batch_metadata,
+        provider_options=provider_options,
+        provider_options_file=provider_options_file,
+        allow_large_batch=allow_large_batch,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        header=header,
+        header_env=header_env,
+        system=system,
+        max_output_tokens=max_output_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        seed=seed,
+        frequency_penalty=frequency_penalty,
+        presence_penalty=presence_penalty,
+        stop=stop,
+        tool_choice=tool_choice,
+        endpoint=endpoint,
+    )
+
+    async def execute() -> tuple[SubmissionResult, LifecycleResult, LifecycleResult]:
+        submission = await execute_submit_text(root, submit_options)
+        if mode is not OutputMode.JSON or submission.error is not None:
+            click.echo(render_job(submission.job, mode), nl=False)
+        if submission.error is not None:
+            click.echo(render_error(submission.error, mode), nl=False, err=True)
+            raise click.exceptions.Exit(8)
+        selector = submission.job.record_id or submission.job.provider_reference
+        lifecycle = LifecycleOptions(selector, None, None, (), (), None, False, None)
+        waited = await wait_job(
+            root,
+            lifecycle,
+            poll_interval=poll_interval or 15.0,
+            timeout_seconds=duration_seconds(timeout),
+        )
+        collected = await results_job(root, lifecycle)
+        return submission, waited, collected
+
+    try:
+        submission, waited, collected = asyncio.run(execute())
+    except LifecycleFailure as failure:
+        _fail_lifecycle(failure, mode)
+        return
+    if mode is OutputMode.JSON:
+        click.echo(
+            serialize_envelope(
+                RunEnvelope(
+                    job=submission.job,
+                    snapshot=waited.snapshot,
+                    results=collected.results or [],
+                )
+            ),
+            nl=False,
+        )
+    elif mode is OutputMode.JSONL:
+        click.echo(
+            serialize_envelope(
+                SnapshotEnvelope(job=waited.resolved.machine_job, snapshot=waited.snapshot)
+            ),
+            nl=False,
+        )
+        for item in collected.results or ():
+            click.echo(
+                serialize_envelope(ResultEnvelope(job=collected.resolved.machine_job, result=item)),
+                nl=False,
+            )
+    else:
+        click.echo(render_snapshot(waited, mode), nl=False)
+        click.echo(render_results(collected, mode), nl=False)
+    if unsuccessful(collected):
+        raise click.exceptions.Exit(6)
 
 
 @run.command("embeddings")
@@ -378,35 +524,123 @@ def run_images(**_: object) -> None:
 @cli.command()
 @click.argument("job")
 @_direct_routing_options
-def status(**_: object) -> None:
+@click.pass_obj
+def status(
+    root: RootOptions,
+    job: str,
+    base_url: str | None,
+    api_key_env: str | None,
+    header: tuple[str, ...],
+    header_env: tuple[str, ...],
+    provider: str | None,
+    save: bool,
+    name: str | None,
+) -> None:
     """Fetch one current snapshot for JOB."""
-    _foundation_only()
+    mode = _output_mode(root)
+    options = _lifecycle_options(
+        job, base_url, api_key_env, header, header_env, provider, save, name
+    )
+    result = asyncio.run(status_job(root, options))
+    click.echo(render_snapshot(result, mode), nl=False)
 
 
 @cli.command()
 @click.argument("job")
 @_direct_routing_options
 @_wait_options
-def wait(**_: object) -> None:
+@click.pass_obj
+def wait(
+    root: RootOptions,
+    job: str,
+    base_url: str | None,
+    api_key_env: str | None,
+    header: tuple[str, ...],
+    header_env: tuple[str, ...],
+    provider: str | None,
+    save: bool,
+    name: str | None,
+    timeout: str | None,
+    poll_interval: float | None,
+) -> None:
     """Wait locally until JOB reaches a terminal state."""
-    _foundation_only()
+    mode = _output_mode(root)
+    options = _lifecycle_options(
+        job, base_url, api_key_env, header, header_env, provider, save, name
+    )
+    try:
+        result = asyncio.run(
+            wait_job(
+                root,
+                options,
+                poll_interval=poll_interval or 15.0,
+                timeout_seconds=duration_seconds(timeout),
+            )
+        )
+    except LifecycleFailure as failure:
+        _fail_lifecycle(failure, mode)
+        return
+    click.echo(render_snapshot(result, mode), nl=False)
+    if unsuccessful(result):
+        raise click.exceptions.Exit(6)
 
 
 @cli.command()
 @click.argument("job")
 @click.option("--output-dir", type=click.Path(path_type=Path, file_okay=False))
 @_direct_routing_options
-def results(**_: object) -> None:
+@click.pass_obj
+def results(
+    root: RootOptions,
+    job: str,
+    output_dir: Path | None,
+    base_url: str | None,
+    api_key_env: str | None,
+    header: tuple[str, ...],
+    header_env: tuple[str, ...],
+    provider: str | None,
+    save: bool,
+    name: str | None,
+) -> None:
     """Retrieve available terminal results for JOB without waiting."""
-    _foundation_only()
+    if output_dir is not None:
+        raise click.UsageError("--output-dir is available for image jobs only.")
+    mode = _output_mode(root, streaming=True)
+    options = _lifecycle_options(
+        job, base_url, api_key_env, header, header_env, provider, save, name
+    )
+    try:
+        result = asyncio.run(results_job(root, options))
+    except LifecycleFailure as failure:
+        _fail_lifecycle(failure, mode)
+        return
+    click.echo(render_results(result, mode), nl=False)
+    if unsuccessful(result):
+        raise click.exceptions.Exit(6)
 
 
 @cli.command()
 @click.argument("job")
 @_direct_routing_options
-def cancel(**_: object) -> None:
+@click.pass_obj
+def cancel(
+    root: RootOptions,
+    job: str,
+    base_url: str | None,
+    api_key_env: str | None,
+    header: tuple[str, ...],
+    header_env: tuple[str, ...],
+    provider: str | None,
+    save: bool,
+    name: str | None,
+) -> None:
     """Request cancellation once, unless JOB is already terminal."""
-    _foundation_only()
+    mode = _output_mode(root)
+    options = _lifecycle_options(
+        job, base_url, api_key_env, header, header_env, provider, save, name
+    )
+    result = asyncio.run(cancel_job(root, options))
+    click.echo(render_snapshot(result, mode), nl=False)
 
 
 @cli.command("list")

@@ -201,6 +201,12 @@ class GoogleAdapter:
         self, id: str, credentials: ProviderCredentials
     ) -> AsyncIterator[BatchResult]:
         snapshot = await self.retrieve(id, credentials)
+        async for result in self.results_from_snapshot(snapshot, credentials):
+            yield result
+
+    async def results_from_snapshot(
+        self, snapshot: BatchSnapshot, credentials: ProviderCredentials
+    ) -> AsyncIterator[BatchResult]:
         raw = snapshot.raw
         response = raw.get("response") if is_string_mapping(raw) else None
         dest = raw.get("dest") if is_string_mapping(raw) else None
@@ -210,13 +216,14 @@ class GoogleAdapter:
                 for field in ("responsesFile", "responses_file", "fileName", "file_name")
             ):
                 raise BatchworkError(
-                    f'batchwork: batch "{id}" returned file-mode results, '
+                    f'batchwork: batch "{snapshot.id}" returned file-mode results, '
                     "which are not supported yet."
                 )
         items = _inline(raw) if is_string_mapping(raw) else []
         if not items:
             raise BatchworkError(
-                f'batchwork: results are not ready for batch "{id}" (status: {snapshot.status}).'
+                f'batchwork: results are not ready for batch "{snapshot.id}" '
+                f"(status: {snapshot.status})."
             )
         for item in items:
             yield self._result(item)
