@@ -240,20 +240,20 @@ async def test_results_delegate_for_every_batch_state(status: BatchStatus) -> No
 
 
 @pytest.mark.asyncio
-async def test_results_refresh_once_and_reuse_snapshot_for_output() -> None:
+async def test_internal_results_reuse_current_snapshot_for_output() -> None:
     adapter = SnapshotResultsAdapter()
     job = BatchJob(adapter, ProviderCredentials(), snapshot(BatchStatus.IN_PROGRESS))
 
-    assert [result.text for result in await job.collect()] == ["hello"]
-    assert adapter.retrieve_calls == 1
+    assert [result.text async for result in job._results_from_current_snapshot()] == ["hello"]
+    assert adapter.retrieve_calls == 0
     assert adapter.result_calls == 0
     assert adapter.result_snapshot is job.snapshot
-    assert job.status is BatchStatus.COMPLETED
+    assert job.status is BatchStatus.IN_PROGRESS
 
 
 @pytest.mark.asyncio
 async def test_collect_cancel_and_owner_close() -> None:
-    adapter = FakeAdapter([BatchStatus.COMPLETED, BatchStatus.CANCELLING])
+    adapter = FakeAdapter([BatchStatus.CANCELLING])
     open_state = True
 
     def ensure_open() -> None:

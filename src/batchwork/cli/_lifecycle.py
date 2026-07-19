@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,6 +76,7 @@ class LifecycleResult:
     resolved: ResolvedJob
     snapshot: BatchSnapshot
     results: list[BatchResult] | None = None
+    item_failed: bool = False
 
 
 class LifecycleFailure(Exception):
@@ -184,6 +185,21 @@ def _persist(resolved: ResolvedJob, snapshot: BatchSnapshot) -> None:
         )
 
 
+def _recovery_command(operation: str, resolved: ResolvedJob) -> list[str]:
+    command = ["batchwork", operation, resolved.machine_job]
+    if resolved.record is not None:
+        return command
+    route = resolved.route.registry
+    command.extend(["--api-key-env", route.api_key_env])
+    if route.base_url:
+        command.extend(["--base-url", route.base_url])
+    for name, value in sorted(route.headers.items()):
+        command.extend(["--header", f"{name}={value}"])
+    for name, variable in sorted(route.header_env.items()):
+        command.extend(["--header-env", f"{name}={variable}"])
+    return command
+
+
 def _adopt_if_requested(
     root: RootOptions,
     options: LifecycleOptions,
@@ -261,7 +277,7 @@ async def wait_job(
                     routing_fingerprint=resolved.machine_fingerprint,
                     recovery=Recovery(
                         action="resume_wait",
-                        command=["batchwork", "wait", resolved.machine_job],
+                        command=_recovery_command("wait", resolved),
                     ),
                 )
             )
@@ -288,23 +304,37 @@ def _nonterminal_failure(resolved: ResolvedJob, snapshot: BatchSnapshot) -> Life
                 routing_fingerprint=resolved.machine_fingerprint,
                 recovery=Recovery(
                     action="wait_for_terminal_state",
-                    command=["batchwork", "wait", resolved.machine_job],
+                    command=_recovery_command("wait", resolved),
                 ),
             )
         )
     )
 
 
-async def results_job(root: RootOptions, options: LifecycleOptions) -> LifecycleResult:
+async def results_job(
+    root: RootOptions,
+    options: LifecycleOptions,
+    *,
+    on_result: Callable[[ResolvedJob, BatchResult], None] | None = None,
+) -> LifecycleResult:
     resolved = resolve_job(root, options)
     async with Batchwork() as client:
         job = await client.get_batch(_ref(resolved))
         _persist(resolved, job.snapshot)
         if not is_terminal_status(job.status):
             raise _nonterminal_failure(resolved, job.snapshot)
-        results = await job.collect(refresh=False)
+        results: list[BatchResult] | None = [] if on_result is None else None
+        item_failed = False
+        async for item in job._results_from_current_snapshot():
+            item_failed = item_failed or item.status is not BatchResultStatus.SUCCEEDED
+            if on_result is None:
+                if results is None:
+                    raise RuntimeError("batchwork: missing buffered result collection")
+                results.append(item)
+            else:
+                on_result(resolved, item)
     resolved = _adopt_if_requested(root, options, resolved, job.snapshot)
-    return LifecycleResult(resolved, job.snapshot, results)
+    return LifecycleResult(resolved, job.snapshot, results, item_failed)
 
 
 async def cancel_job(root: RootOptions, options: LifecycleOptions) -> LifecycleResult:
@@ -321,8 +351,10 @@ async def cancel_job(root: RootOptions, options: LifecycleOptions) -> LifecycleR
 
 
 def unsuccessful(result: LifecycleResult) -> bool:
-    return result.snapshot.status is not BatchStatus.COMPLETED or any(
-        item.status is not BatchResultStatus.SUCCEEDED for item in (result.results or ())
+    return (
+        result.snapshot.status is not BatchStatus.COMPLETED
+        or result.item_failed
+        or any(item.status is not BatchResultStatus.SUCCEEDED for item in (result.results or ()))
     )
 
 

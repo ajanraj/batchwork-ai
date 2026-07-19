@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,6 +20,8 @@ from batchwork.types import (
 )
 
 from ._contract import Job
+
+_RECORD_ID = re.compile(r"^bw_[0-9a-f]{32}$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -281,7 +284,7 @@ def get_job(path: Path, selector: str) -> RegistryJob | None:
     with sqlite3.connect(path, timeout=5) as connection:
         connection.row_factory = sqlite3.Row
         _ensure_columns(connection)
-        column = "record_id" if selector.startswith("bw_") else "name"
+        column = "record_id" if _RECORD_ID.fullmatch(selector) else "name"
         row = connection.execute(f"SELECT * FROM jobs WHERE {column} = ?", (selector,)).fetchone()
     return _registry_job(row) if row is not None else None
 
