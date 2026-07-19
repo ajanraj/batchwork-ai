@@ -147,12 +147,6 @@ class XAIAdapter:
             if token is None:
                 return
 
-    async def results_from_snapshot(
-        self, snapshot: BatchSnapshot, credentials: ProviderCredentials
-    ) -> AsyncIterator[BatchResult]:
-        async for result in self.results(snapshot.id, credentials):
-            yield result
-
     def _result(self, item: Mapping[str, object]) -> BatchResult:
         raw_id = item.get("batch_request_id")
         custom_id = raw_id if isinstance(raw_id, str) else ""

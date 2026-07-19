@@ -10,7 +10,13 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from batchwork.types import BatchProvider, BatchRequestCounts, BatchSnapshot, BatchStatus
+from batchwork.types import (
+    BatchProvider,
+    BatchRequestCounts,
+    BatchSnapshot,
+    BatchStatus,
+    is_terminal_status,
+)
 
 from ._contract import Job
 
@@ -214,15 +220,7 @@ def adopt_job(
                 snapshot.created_at.isoformat() if snapshot.created_at else None,
                 snapshot.completed_at.isoformat() if snapshot.completed_at else None,
                 snapshot.expires_at.isoformat() if snapshot.expires_at else None,
-                registered_at.isoformat()
-                if snapshot.status
-                in {
-                    BatchStatus.COMPLETED,
-                    BatchStatus.FAILED,
-                    BatchStatus.EXPIRED,
-                    BatchStatus.CANCELLED,
-                }
-                else None,
+                registered_at.isoformat() if is_terminal_status(snapshot.status) else None,
                 registered_at.isoformat(),
             ),
         )
@@ -289,12 +287,7 @@ def get_job(path: Path, selector: str) -> RegistryJob | None:
 
 
 def update_job(path: Path, record_id: str, snapshot: BatchSnapshot, refreshed_at: datetime) -> None:
-    terminal = snapshot.status in {
-        BatchStatus.COMPLETED,
-        BatchStatus.FAILED,
-        BatchStatus.EXPIRED,
-        BatchStatus.CANCELLED,
-    }
+    terminal = is_terminal_status(snapshot.status)
     counts = snapshot.request_counts
     with sqlite3.connect(path, timeout=5) as connection:
         _ensure_columns(connection)
@@ -303,12 +296,7 @@ def update_job(path: Path, record_id: str, snapshot: BatchSnapshot, refreshed_at
         ).fetchone()
         if current is None:
             return
-        current_terminal = BatchStatus(current[0]) in {
-            BatchStatus.COMPLETED,
-            BatchStatus.FAILED,
-            BatchStatus.EXPIRED,
-            BatchStatus.CANCELLED,
-        }
+        current_terminal = is_terminal_status(BatchStatus(current[0]))
         if current_terminal and not terminal:
             return
         connection.execute(
