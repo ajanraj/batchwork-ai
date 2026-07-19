@@ -173,7 +173,7 @@ def _retryable_read_failure(error: BaseException) -> bool:
     if failure.kind is not ProviderFailureKind.TRANSPORT:
         return False
     causes = _cause_chain(error)
-    if any(isinstance(cause, ssl.SSLCertVerificationError) for cause in causes):
+    if any(isinstance(cause, ssl.SSLError) for cause in causes):
         return False
     return any(
         isinstance(
@@ -183,7 +183,6 @@ def _retryable_read_failure(error: BaseException) -> bool:
                 httpx.ConnectTimeout,
                 httpx.ReadError,
                 httpx.ReadTimeout,
-                httpx.RemoteProtocolError,
             ),
         )
         for cause in causes
