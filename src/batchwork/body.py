@@ -42,9 +42,7 @@ _TEXT_PROVIDERS = frozenset(BatchProvider)
 _EMBEDDING_PROVIDERS = frozenset(
     {BatchProvider.OPENAI, BatchProvider.GOOGLE, BatchProvider.MISTRAL}
 )
-_IMAGE_PROVIDERS = frozenset(
-    {BatchProvider.OPENAI, BatchProvider.GOOGLE, BatchProvider.XAI}
-)
+_IMAGE_PROVIDERS = frozenset({BatchProvider.OPENAI, BatchProvider.GOOGLE, BatchProvider.XAI})
 
 
 def _anthropic_capabilities(model_id: str) -> tuple[int, bool, bool, bool]:
