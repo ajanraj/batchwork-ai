@@ -22,10 +22,6 @@ def encode_bounded_json(value: Mapping[str, object], maximum: int) -> bytes:
     for chunk in chunks:
         part = chunk.encode()
         if len(encoded) + len(part) > maximum:
-            try:
-                next(chunks)
-            except StopIteration:
-                raise JsonSizeExceeded(maximum, len(encoded) + len(part)) from None
-            raise JsonSizeExceeded(maximum) from None
+            raise JsonSizeExceeded(maximum, len(encoded) + len(part))
         encoded.extend(part)
     return bytes(encoded)

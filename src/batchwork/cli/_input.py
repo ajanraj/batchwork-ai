@@ -15,7 +15,7 @@ from typing import BinaryIO
 import click
 from pydantic import ValidationError
 
-from batchwork._limits import RECORD_BYTES, REQUESTS, SOURCE_BYTES
+from batchwork._limits import MAX_RECORD_BYTES, MAX_REQUESTS, MAX_SOURCE_BYTES
 from batchwork.types import BatchRequest
 
 from ._contract import KnownErrorCode
@@ -145,12 +145,21 @@ def _read_source(source: Path, stdin: BinaryIO | None, input_format: InputFormat
     csv_quoted = False
     csv_pending_quote = False
     try:
-        while chunk := stream.read(_READ_CHUNK_BYTES):
+        while True:
+            remaining_source = MAX_SOURCE_BYTES - len(encoded) + 1
+            remaining_record = (
+                remaining_source
+                if input_format is InputFormat.JSON
+                else MAX_RECORD_BYTES - record_bytes + 1
+            )
+            chunk = stream.read(min(_READ_CHUNK_BYTES, remaining_source, remaining_record))
+            if not chunk:
+                break
             for byte in chunk:
                 encoded.append(byte)
-                if len(encoded) > SOURCE_BYTES:
+                if len(encoded) > MAX_SOURCE_BYTES:
                     raise _usage(
-                        f"{label} exceeds the {SOURCE_BYTES} byte transport limit.",
+                        f"{label} exceeds the {MAX_SOURCE_BYTES} byte transport limit.",
                         code="hard_limit_exceeded",
                     )
                 if input_format is InputFormat.JSON:
@@ -175,10 +184,11 @@ def _read_source(source: Path, stdin: BinaryIO | None, input_format: InputFormat
                     record_bytes = 0
                     if not (byte == ord("\n") and previous_cr):
                         record_number += 1
-                if record_bytes > RECORD_BYTES:
+                if record_bytes > MAX_RECORD_BYTES:
                     unit = "record" if input_format is InputFormat.CSV else "line"
                     raise _usage(
-                        f"{label} {unit} {record_number} exceeds the {RECORD_BYTES} byte limit.",
+                        f"{label} {unit} {record_number} exceeds the "
+                        f"{MAX_RECORD_BYTES} byte limit.",
                         code="hard_limit_exceeded",
                     )
                 previous_cr = byte == ord("\r")
@@ -240,9 +250,9 @@ def _json_requests(contents: str) -> list[_ParsedRequest]:
     if isinstance(document, list):
         if not document:
             raise _usage("SOURCE must contain at least one JSON request object.")
-        if len(document) > REQUESTS:
+        if len(document) > MAX_REQUESTS:
             raise _usage(
-                f"SOURCE exceeds the {REQUESTS} request limit.",
+                f"SOURCE exceeds the {MAX_REQUESTS} request limit.",
                 code="hard_limit_exceeded",
             )
         return [
@@ -256,11 +266,7 @@ def _jsonl_requests(contents: str) -> list[_ParsedRequest]:
     for line_number, line in enumerate(_lines(contents), start=1):
         if not line.strip():
             continue
-        if len(parsed) == REQUESTS:
-            raise _usage(
-                f"SOURCE exceeds the {REQUESTS} request limit at JSONL line {line_number}.",
-                code="hard_limit_exceeded",
-            )
+        _ensure_request_slot(parsed, f"JSONL line {line_number}")
         document = _decode_json(line, f"Invalid JSONL object at line {line_number}")
         parsed.append(_validate_request(document, f"JSONL line {line_number}"))
     if not parsed:
@@ -289,11 +295,7 @@ def _csv_requests(contents: str) -> list[_ParsedRequest]:
     parsed: list[_ParsedRequest] = []
     try:
         for row_number, row in enumerate(reader, start=2):
-            if len(parsed) == REQUESTS:
-                raise _usage(
-                    f"SOURCE exceeds the {REQUESTS} request limit at CSV row {row_number}.",
-                    code="hard_limit_exceeded",
-                )
+            _ensure_request_slot(parsed, f"CSV row {row_number}")
             if len(row) != len(header):
                 column = header[len(row)] if len(row) < len(header) else str(len(header) + 1)
                 raise _usage(
@@ -338,15 +340,19 @@ def _text_requests(contents: str) -> list[_ParsedRequest]:
     for line_number, line in enumerate(_lines(contents), start=1):
         if not line.strip():
             continue
-        if len(parsed) == REQUESTS:
-            raise _usage(
-                f"SOURCE exceeds the {REQUESTS} request limit at text line {line_number}.",
-                code="hard_limit_exceeded",
-            )
+        _ensure_request_slot(parsed, f"text line {line_number}")
         parsed.append(_ParsedRequest(BatchRequest(prompt=line), f"text line {line_number}"))
     if not parsed:
         raise _usage("SOURCE must contain at least one non-whitespace text line.")
     return parsed
+
+
+def _ensure_request_slot(parsed: Sequence[_ParsedRequest], coordinate: str) -> None:
+    if len(parsed) == MAX_REQUESTS:
+        raise _usage(
+            f"SOURCE exceeds the {MAX_REQUESTS} request limit at {coordinate}.",
+            code="hard_limit_exceeded",
+        )
 
 
 def _normalize_ids(parsed: Sequence[_ParsedRequest]) -> list[BatchRequest]:

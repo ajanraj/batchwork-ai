@@ -257,6 +257,85 @@ async def test_client_completes_local_media_preflight_before_remote_fetch(monkey
 
 
 @pytest.mark.asyncio
+async def test_client_validates_locally_expanded_body_before_remote_fetch(monkeypatch) -> None:
+    adapter = FakeAdapter()
+    monkeypatch.setattr(client_module, "_get_adapter", lambda provider, client: adapter)
+    resolved_sources: list[object] = []
+
+    class Resolver:
+        async def resolve(self, source, *, media_type=None, max_bytes):
+            resolved_sources.append(source)
+            if str(source).lower().startswith("https://"):
+                raise AssertionError("remote media fetched before local body validation")
+            return ResolvedMedia(b"x" * 80, "text/plain")
+
+    client = Batchwork(media_resolver=Resolver())
+    with pytest.raises(BatchworkError, match="request-1"):
+        await client.batch(
+            model="together/model",
+            requests=[
+                BatchRequest(
+                    messages=[
+                        UserMessage(
+                            content=[
+                                FilePart(
+                                    data="https://example.com/file.txt", media_type="text/plain"
+                                )
+                            ]
+                        )
+                    ]
+                ),
+                BatchRequest(
+                    messages=[UserMessage(content=[FilePart(data="eA==", media_type="text/plain")])]
+                ),
+            ],
+            limits=BatchLimits(max_request_bytes=100, max_upload_bytes=200),
+        )
+
+    assert resolved_sources == ["eA=="]
+    assert adapter.built == []
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_shares_decoded_media_budget_across_local_and_remote_phases(
+    monkeypatch,
+) -> None:
+    adapter = FakeAdapter()
+    monkeypatch.setattr(client_module, "_get_adapter", lambda provider, client: adapter)
+
+    class Resolver:
+        async def resolve(self, source, *, media_type=None, max_bytes):
+            return ResolvedMedia(b"123456", "text/plain")
+
+    client = Batchwork(media_resolver=Resolver())
+    with pytest.raises(BatchworkError, match="aggregate decoded media"):
+        await client.batch(
+            model="together/model",
+            requests=[
+                BatchRequest(
+                    messages=[UserMessage(content=[FilePart(data="eA==", media_type="text/plain")])]
+                ),
+                BatchRequest(
+                    messages=[
+                        UserMessage(
+                            content=[
+                                FilePart(
+                                    data="https://example.com/file.txt", media_type="text/plain"
+                                )
+                            ]
+                        )
+                    ]
+                ),
+            ],
+            limits=BatchLimits(max_request_bytes=100, max_upload_bytes=10),
+        )
+
+    assert adapter.built == []
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_client_preserves_xai_responses_file_urls_by_default(monkeypatch) -> None:
     adapter = FakeAdapter()
     monkeypatch.setattr(client_module, "_get_adapter", lambda provider, client: adapter)

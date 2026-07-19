@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from urllib.parse import SplitResult, urlsplit
 
 import httpx
@@ -114,6 +114,7 @@ class AnthropicAdapter:
         model_id: str,
         metadata: Mapping[str, str] | None = None,
         limits: BatchLimits | None = None,
+        validate_upload: Callable[[int], None] | None = None,
     ) -> BatchSnapshot:
         del endpoint, model_id, metadata
         requests = [
@@ -123,7 +124,7 @@ class AnthropicAdapter:
             }
             for item in built
         ]
-        content = encode_json({"requests": requests}, limits)
+        content = encode_json({"requests": requests}, limits, validate_upload=validate_upload)
         raw = await request_json(
             self._client,
             "POST",

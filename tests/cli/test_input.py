@@ -195,7 +195,7 @@ def test_load_text_requests_stops_at_first_request_over_limit(
         "requests.jsonl",
         b'{"prompt":"one"}\n{"prompt":"two"}\n{"prompt":"unparsed","unknown":true}\n',
     )
-    monkeypatch.setattr(input_module, "REQUESTS", 1)
+    monkeypatch.setattr(input_module, "MAX_REQUESTS", 1)
 
     with pytest.raises(click.UsageError, match="request limit at JSONL line 2"):
         load_text_requests(source, None)

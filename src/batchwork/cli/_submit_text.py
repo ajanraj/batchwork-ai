@@ -15,11 +15,10 @@ from pathlib import Path
 import click
 from pydantic import TypeAdapter, ValidationError
 
-from batchwork._limits import LARGE_BATCH_REQUESTS, LARGE_BATCH_UPLOAD_BYTES, PROVIDER_OPTIONS_BYTES
+from batchwork._limits import MAX_PROVIDER_OPTIONS_BYTES
 from batchwork.body import build_text_bodies, validate_request_count
 from batchwork.client import Batchwork
-from batchwork.errors import BatchworkError
-from batchwork.providers.shared import serialized_upload_validation
+from batchwork.errors import BatchworkError, _LimitExceededError
 from batchwork.types import (
     BatchDefaults,
     BatchLimits,
@@ -62,6 +61,7 @@ from ._failures import (
 from ._input import load_text_requests
 from ._registry import RegistryRoute, insert_job
 from ._state import OutputMode, RootOptions
+from ._volume import WorkloadVolume, require_large_batch_authorization
 
 _JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _RECORD_ID = re.compile(r"^bw_[0-9a-f]{32}$")
@@ -274,9 +274,9 @@ def resolve_registered_route(provider: BatchProvider, route: RegistryRoute) -> R
 
 
 def _parse_json_object(document: str, label: str) -> dict[str, JsonValue]:
-    if len(document.encode()) > PROVIDER_OPTIONS_BYTES:
+    if len(document.encode()) > MAX_PROVIDER_OPTIONS_BYTES:
         raise CliUsageError(
-            f"{label} exceeds the {PROVIDER_OPTIONS_BYTES} byte limit.",
+            f"{label} exceeds the {MAX_PROVIDER_OPTIONS_BYTES} byte limit.",
             code="hard_limit_exceeded",
         )
     try:
@@ -300,10 +300,10 @@ def _provider_options(
     if source is not None:
         try:
             with source.open("rb") as stream:
-                encoded = stream.read(PROVIDER_OPTIONS_BYTES + 1)
-            if len(encoded) > PROVIDER_OPTIONS_BYTES:
+                encoded = stream.read(MAX_PROVIDER_OPTIONS_BYTES + 1)
+            if len(encoded) > MAX_PROVIDER_OPTIONS_BYTES:
                 raise CliUsageError(
-                    f"Provider options exceed the {PROVIDER_OPTIONS_BYTES} byte limit.",
+                    f"Provider options exceed the {MAX_PROVIDER_OPTIONS_BYTES} byte limit.",
                     code="hard_limit_exceeded",
                 )
             document = encoded.decode("utf-8-sig")
@@ -328,7 +328,8 @@ def _model_spec(model: str, endpoint: str | None) -> ModelSpec:
     try:
         resolved = resolve_model(model)
     except (BatchworkError, ValueError) as error:
-        raise _usage(str(error)) from error
+        code = "hard_limit_exceeded" if isinstance(error, _LimitExceededError) else "usage_error"
+        raise CliUsageError(str(error), code=code) from error
     if endpoint is None:
         return resolved
     kinds = {
@@ -424,22 +425,14 @@ async def submit_text(
         )
     except (BatchworkError, ValueError) as error:
         raise _usage(str(error)) from error
-    if len(built) > LARGE_BATCH_REQUESTS and not options.allow_large_batch:
-        raise CliUsageError(
-            f"The batch contains {len(built)} requests, above the "
-            f"{LARGE_BATCH_REQUESTS} request soft limit; authorize it with "
-            "--allow-large-batch.",
-            code="large_batch_not_allowed",
-        )
+    require_large_batch_authorization(
+        WorkloadVolume(requests=len(built)), authorized=options.allow_large_batch
+    )
 
     def validate_upload_size(size: int) -> None:
-        if size > LARGE_BATCH_UPLOAD_BYTES and not options.allow_large_batch:
-            raise CliUsageError(
-                f"The serialized provider upload is {size} bytes, above the "
-                f"{LARGE_BATCH_UPLOAD_BYTES} byte soft limit; authorize it with "
-                "--allow-large-batch.",
-                code="large_batch_not_allowed",
-            )
+        require_large_batch_authorization(
+            WorkloadVolume(upload_bytes=size), authorized=options.allow_large_batch
+        )
 
     submission_context = FailureContext(
         operation="submit",
@@ -449,23 +442,26 @@ async def submit_text(
     )
     _active_submission_context = submission_context
     try:
-        with serialized_upload_validation(validate_upload_size):
-            async with Batchwork() as client:
-                job = await client.batch(
-                    model=spec,
-                    requests=requests,
-                    defaults=defaults,
-                    metadata=_metadata(options.batch_metadata),
-                    limits=limits,
-                    api_key=route.api_key,
-                    base_url=route.base_url,
-                    headers=route.headers,
-                )
+        async with Batchwork() as client:
+            job = await client._submit_text_batch(
+                model=spec,
+                requests=requests,
+                defaults=defaults,
+                metadata=_metadata(options.batch_metadata),
+                limits=limits,
+                api_key=route.api_key,
+                base_url=route.base_url,
+                headers=route.headers,
+                validate_upload=validate_upload_size,
+            )
     except (InterruptionRequested, TerminationRequested) as error:
         _active_submission_context = None
         raise _unknown_submission_signal_failure(
             isinstance(error, InterruptionRequested), submission_context
         ) from None
+    except _LimitExceededError as error:
+        _active_submission_context = None
+        raise CliUsageError(str(error), code="hard_limit_exceeded") from error
     except Exception as error:
         _active_submission_context = None
         failure = provider_failure(

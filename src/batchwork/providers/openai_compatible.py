@@ -276,6 +276,7 @@ class OpenAICompatibleAdapter:
         model_id: str,
         metadata: Mapping[str, str] | None = None,
         limits: BatchLimits | None = None,
+        validate_upload: Callable[[int], None] | None = None,
     ) -> BatchSnapshot:
         del model_id
         normalized = self._normalize_endpoint(endpoint) if self._normalize_endpoint else endpoint
@@ -288,7 +289,7 @@ class OpenAICompatibleAdapter:
                 lines.append(
                     {"custom_id": item.custom_id, "method": "POST", "url": normalized, "body": body}
                 )
-        payload = encode_jsonl(lines, limits)
+        payload = encode_jsonl(lines, limits, validate_upload=validate_upload)
         url = self._base(credentials)
         headers = self._headers(credentials)
         if self._file_uploader is None:

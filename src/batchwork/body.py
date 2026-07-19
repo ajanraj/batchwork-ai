@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from ._anthropic_serialization import anthropic_prompt
 from ._bounded_json import JsonSizeExceeded, encode_bounded_json
 from ._google_serialization import google_messages
-from ._limits import REQUEST_BYTES, REQUESTS
+from ._limits import MAX_REQUEST_BYTES, MAX_REQUESTS
 from ._serialization import (
     Request,
     _chat_tool,
@@ -26,7 +26,7 @@ from ._serialization import (
     _xai_responses_input,
 )
 from ._typing import is_string_mapping
-from .errors import BatchworkError, UnsupportedProviderError
+from .errors import BatchworkError, UnsupportedProviderError, _LimitExceededError
 from .types import BatchLimits, BatchProvider, ModelKind
 
 
@@ -87,24 +87,24 @@ def _limits_value(limits: BatchLimits | None, name: str, default: int) -> int:
 
 
 def validate_request_count(requests: Sequence[object], limits: BatchLimits | None) -> None:
-    maximum = _limits_value(limits, "max_requests", REQUESTS)
+    maximum = _limits_value(limits, "max_requests", MAX_REQUESTS)
     if len(requests) > maximum:
-        raise BatchworkError(
+        raise _LimitExceededError(
             f"batchwork: requests length {len(requests)} exceeds the {maximum} request limit."
         )
 
 
 def _validate_size(custom_id: str, body: Mapping[str, object], limits: BatchLimits | None) -> None:
-    maximum = _limits_value(limits, "max_request_bytes", REQUEST_BYTES)
+    maximum = _limits_value(limits, "max_request_bytes", MAX_REQUEST_BYTES)
     try:
         encode_bounded_json(body, maximum)
     except JsonSizeExceeded as error:
         size = (
-            f"{error.known_size} bytes"
+            f"at least {error.known_size} bytes"
             if error.known_size is not None
             else f"more than {maximum} bytes"
         )
-        raise BatchworkError(
+        raise _LimitExceededError(
             f'batchwork: request "{custom_id}" is {size}, exceeding the {maximum} byte limit.'
         ) from error
 

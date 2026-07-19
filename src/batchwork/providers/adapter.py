@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Protocol
 
 from batchwork.body import BuiltRequest
@@ -27,6 +27,7 @@ class BatchAdapter(Protocol):
         model_id: str,
         metadata: Mapping[str, str] | None = None,
         limits: BatchLimits | None = None,
+        validate_upload: Callable[[int], None] | None = None,
     ) -> BatchSnapshot: ...
 
     async def retrieve(self, id: str, credentials: ProviderCredentials) -> BatchSnapshot: ...
