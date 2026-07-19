@@ -808,7 +808,10 @@ def list_jobs(
         _fail_local_state(
             root,
             code="registry_read_failed",
-            message=f"Could not read local registry: {error}.",
+            message=(
+                f"Could not read local registry: {error}. No records were changed; check "
+                "the registry path, permissions, and integrity, then retry."
+            ),
             operation="list",
             path=selected_registry,
         )
@@ -846,7 +849,10 @@ def forget(root: RootOptions, job: str) -> None:
         _fail_local_state(
             root,
             code="registry_write_failed",
-            message=f"Could not update local registry: {error}.",
+            message=(
+                f"Could not forget the local record: {error}. The remote job was not changed; "
+                "check registry integrity, then retry."
+            ),
             operation="forget",
             path=selected_registry,
         )
@@ -855,7 +861,10 @@ def forget(root: RootOptions, job: str) -> None:
         _fail_local_state(
             root,
             code="local_job_not_found",
-            message=f'Local JOB "{job}" was not found.',
+            message=(
+                f'Local JOB "{job}" was not found. Nothing was removed and no remote job was '
+                'changed; run "batchwork list" to find a local selector.'
+            ),
             operation="forget",
             path=selected_registry,
         )
@@ -886,12 +895,15 @@ def prune(root: RootOptions, older_than: str, yes: bool) -> None:
     cutoff_at = datetime.now(UTC) - timedelta(seconds=seconds)
     selected_registry = registry_path(root.registry)
     try:
-        changed_records = prune_jobs(selected_registry, cutoff_at, commit=yes)
+        record_count = prune_jobs(selected_registry, cutoff_at, commit=yes)
     except (OSError, sqlite3.Error) as error:
         _fail_local_state(
             root,
             code="registry_write_failed" if yes else "registry_read_failed",
-            message=f"Could not {'update' if yes else 'read'} local registry: {error}.",
+            message=(
+                f"Could not {'update' if yes else 'read'} the local prune set: {error}. "
+                "No remote jobs were changed; check registry integrity, then retry."
+            ),
             operation="prune",
             path=selected_registry,
         )
@@ -901,18 +913,18 @@ def prune(root: RootOptions, older_than: str, yes: bool) -> None:
         envelope = RegistryChangeEnvelope(
             operation="prune",
             path=str(selected_registry),
-            changed_records=changed_records,
+            changed_records=record_count,
             older_than=older_than,
         )
-        human = f"Pruned {changed_records} local terminal record(s); remote jobs unchanged."
+        human = f"Pruned {record_count} local terminal record(s); remote jobs unchanged."
     else:
         envelope = RegistryPrunePlanEnvelope(
             path=str(selected_registry),
             older_than=older_than,
             cutoff_at=cutoff_at,
-            candidate_records=changed_records,
+            candidate_records=record_count,
         )
-        human = f"Would prune {changed_records} local terminal record(s); rerun with --yes."
+        human = f"Would prune {record_count} local terminal record(s); rerun with --yes."
     if mode in {OutputMode.JSON, OutputMode.JSONL}:
         click.echo(serialize_envelope(envelope), nl=False)
     else:

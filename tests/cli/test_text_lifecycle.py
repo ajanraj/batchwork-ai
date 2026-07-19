@@ -328,6 +328,81 @@ def test_installed_status_accepts_saved_alias_and_bare_explicit_provider(
     assert handler.requests == [("GET", "/v1/batches/batch_123")]
 
 
+def test_adoption_alias_collision_preserves_registry_and_returns_direct_recovery(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    registry = tmp_path / "registry.sqlite3"
+    saved = subprocess.run(
+        [
+            _batchwork(),
+            "--json",
+            "--registry",
+            str(registry),
+            "status",
+            *_direct(base_url),
+            "--save",
+            "--name",
+            "taken",
+        ],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert saved.returncode == 0, saved.stderr
+
+    environment = _environment()
+    environment["OTHER_OPENAI_KEY"] = "secret"
+    collision = subprocess.run(
+        [
+            _batchwork(),
+            "--json",
+            "--registry",
+            str(registry),
+            "status",
+            "openai:batch_123",
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "OTHER_OPENAI_KEY",
+            "--save",
+            "--name",
+            "taken",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert collision.returncode == 8
+    assert collision.stdout == ""
+    error = json.loads(collision.stderr)["error"]
+    assert error["code"] == "registry_name_conflict"
+    assert error["recovery"]["command"] == [
+        "batchwork",
+        "--registry",
+        str(registry),
+        "status",
+        "openai:batch_123",
+        "--api-key-env",
+        "OTHER_OPENAI_KEY",
+        "--base-url",
+        base_url,
+        "--save",
+    ]
+    with sqlite3.connect(registry) as connection:
+        assert connection.execute("SELECT name FROM jobs").fetchall() == [("taken",)]
+    assert handler.requests == [
+        ("GET", "/v1/batches/batch_123"),
+        ("GET", "/v1/batches/batch_123"),
+    ]
+
+
 def test_local_selector_explicit_profile_is_fingerprint_checked_before_network(
     tmp_path: Path,
     lifecycle_provider: tuple[str, type[_LifecycleHandler]],

@@ -296,6 +296,22 @@ def test_adoption_alias_collision_changes_nothing(tmp_path: Path) -> None:
         ]
 
 
+def test_adoption_preserves_unknown_modality(tmp_path: Path) -> None:
+    registry = tmp_path / "registry.sqlite3"
+    adopted = adopt_job(
+        registry,
+        name="adopted",
+        profile=None,
+        route=_route(),
+        snapshot=_snapshot("batch_adopted"),
+        registered_at=datetime.now(UTC),
+    )
+
+    assert adopted.job.modality is None
+    text_jobs = _invoke(registry, "list", "--modality", "text")
+    assert json.loads(text_jobs.stdout)["jobs"] == []
+
+
 def test_stale_refresh_cannot_regress_terminal_state(tmp_path: Path) -> None:
     registry = tmp_path / "registry.sqlite3"
     now = datetime.now(UTC)
@@ -318,3 +334,27 @@ def test_stale_refresh_cannot_regress_terminal_state(tmp_path: Path) -> None:
         assert connection.execute(
             "SELECT status, terminal_at FROM jobs WHERE record_id = ?", (record_id,)
         ).fetchone() == ("completed", (now + timedelta(seconds=1)).isoformat())
+
+
+def test_new_terminal_observation_can_correct_terminal_state(tmp_path: Path) -> None:
+    registry = tmp_path / "registry.sqlite3"
+    now = datetime.now(UTC)
+    record_id = _insert(
+        registry,
+        "batch_terminal",
+        name=None,
+        registered_at=now,
+        status=BatchStatus.FAILED,
+    )
+
+    update_job(
+        registry,
+        record_id,
+        _snapshot("batch_terminal", status=BatchStatus.COMPLETED),
+        now + timedelta(seconds=1),
+    )
+
+    with sqlite3.connect(registry) as connection:
+        assert connection.execute(
+            "SELECT status, terminal_at FROM jobs WHERE record_id = ?", (record_id,)
+        ).fetchone() == ("completed", now.isoformat())

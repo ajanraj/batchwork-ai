@@ -35,6 +35,7 @@ from ._contract import (
 )
 from ._registry import (
     RegistryJob,
+    RegistryNameConflict,
     adopt_job,
     get_job,
     is_job_name,
@@ -277,7 +278,8 @@ def _adopt_if_requested(
             registered_at=datetime.now(UTC),
         )
     except (OSError, sqlite3.Error) as error:
-        conflict = isinstance(error, sqlite3.IntegrityError) and options.name is not None
+        conflict = isinstance(error, RegistryNameConflict)
+        direct_recovery = _recovery_command("status", resolved)
         message = (
             f'Local name "{options.name}" is already in use; the provider operation '
             "succeeded but the registry was unchanged."
@@ -297,6 +299,16 @@ def _adopt_if_requested(
                     job=f"{resolved.provider.value}:{resolved.provider_job_id}",
                     routing_fingerprint=resolved.route.registry.fingerprint,
                     registry_path=str(selected_registry_path),
+                    recovery=Recovery(
+                        action="retry_adoption_without_name",
+                        command=[
+                            "batchwork",
+                            "--registry",
+                            str(selected_registry_path),
+                            *direct_recovery[1:],
+                            "--save",
+                        ],
+                    ),
                 )
             )
         ) from error
