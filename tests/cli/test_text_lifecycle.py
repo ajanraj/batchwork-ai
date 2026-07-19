@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sysconfig
 import threading
@@ -325,6 +326,121 @@ def test_installed_status_accepts_saved_alias_and_bare_explicit_provider(
     )
     assert bare.returncode == 0, bare.stderr
     assert handler.requests == [("GET", "/v1/batches/batch_123")]
+
+
+def test_local_selector_explicit_profile_is_fingerprint_checked_before_network(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    registry = tmp_path / "registry.sqlite3"
+    saved = subprocess.run(
+        [
+            _batchwork(),
+            "--registry",
+            str(registry),
+            "status",
+            *_direct(base_url),
+            "--save",
+            "--name",
+            "local-job",
+        ],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert saved.returncode == 0, saved.stderr
+    config = tmp_path / "config.toml"
+    config.write_text(
+        """\
+schema_version = 1
+[profiles.other.providers.openai]
+api_key_env = "OTHER_KEY"
+base_url = "https://other.example/v1"
+"""
+    )
+    handler.requests = []
+
+    result = subprocess.run(
+        [
+            _batchwork(),
+            "--config",
+            str(config),
+            "--registry",
+            str(registry),
+            "--profile",
+            "other",
+            "status",
+            "local-job",
+        ],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    assert "routing fingerprint" in result.stderr
+    assert "openai:batch_123" in result.stderr
+    assert "--save" in result.stderr
+    assert handler.requests == []
+
+
+def test_matching_explicit_profile_updates_only_label_after_success(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, _ = lifecycle_provider
+    registry = tmp_path / "registry.sqlite3"
+    saved = subprocess.run(
+        [_batchwork(), "--registry", str(registry), "status", *_direct(base_url), "--save"],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert saved.returncode == 0, saved.stderr
+    record_id = json.loads(saved.stdout)["job"]
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"""\
+schema_version = 1
+[profiles.match.providers.openai]
+api_key_env = "TEST_OPENAI_KEY"
+base_url = "{base_url}"
+"""
+    )
+
+    result = subprocess.run(
+        [
+            _batchwork(),
+            "--config",
+            str(config),
+            "--registry",
+            str(registry),
+            "--profile",
+            "match",
+            "status",
+            record_id,
+        ],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    with sqlite3.connect(registry) as connection:
+        profile, fingerprint = connection.execute(
+            "SELECT profile, routing_fingerprint FROM jobs WHERE record_id = ?", (record_id,)
+        ).fetchone()
+    assert profile == "match"
+    assert fingerprint
 
 
 def test_installed_run_timeout_preserves_resumable_job_without_cancelling(

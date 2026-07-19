@@ -23,6 +23,7 @@ from batchwork.types import (
     is_terminal_status,
 )
 
+from ._config import ConfigError, ProviderConfig, load_config, registry_path, select_profile
 from ._contract import (
     ErrorDetail,
     ErrorEnvelope,
@@ -32,9 +33,14 @@ from ._contract import (
     SnapshotEnvelope,
     serialize_envelope,
 )
-from ._registry import RegistryJob, adopt_job, default_registry_path, get_job, update_job
+from ._registry import RegistryJob, adopt_job, get_job, update_job, update_job_profile
 from ._state import OutputMode, RootOptions
-from ._submit_text import ResolvedRoute, _resolve_route, resolve_registered_route
+from ._submit_text import (
+    ResolvedRoute,
+    _resolve_route,
+    resolve_registered_route,
+    resolve_route_descriptor,
+)
 
 _JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -59,6 +65,7 @@ class ResolvedJob:
     route: ResolvedRoute
     registry_path: Path | None = None
     record: RegistryJob | None = None
+    selected_profile: str | None = None
 
     @property
     def machine_job(self) -> str:
@@ -108,6 +115,7 @@ def _direct_flags(options: LifecycleOptions) -> bool:
 
 
 def resolve_job(root: RootOptions, options: LifecycleOptions) -> ResolvedJob:
+    loaded = load_config(root.config)
     if options.name is not None and not options.save:
         raise click.UsageError("--name requires --save.")
     if options.name is not None and not _JOB_NAME.fullmatch(options.name):
@@ -130,34 +138,68 @@ def resolve_job(root: RootOptions, options: LifecycleOptions) -> ResolvedJob:
         provider_job_id = options.job
 
     if provider is not None and provider_job_id is not None:
+        if root.profile is not None and _direct_flags(options):
+            raise click.UsageError("--profile cannot be combined with direct routing flags.")
+        profile_name, profile = select_profile(loaded, root.profile)
         route = _resolve_route(
             provider,
             api_key_env=options.api_key_env,
             base_url=options.base_url,
             header=options.header,
             header_env=options.header_env,
+            profile=profile.providers.get(provider) if profile else None,
         )
-        return ResolvedJob(options.job, provider, provider_job_id, route)
+        return ResolvedJob(
+            options.job,
+            provider,
+            provider_job_id,
+            route,
+            selected_profile=profile_name,
+        )
 
     if options.save or _direct_flags(options):
         raise click.UsageError(
             "Direct routing options require provider:provider-job-id or --provider."
         )
-    registry_path = root.registry or default_registry_path()
-    record = get_job(registry_path, options.job)
+    selected_registry_path = registry_path(root.registry)
+    record = get_job(selected_registry_path, options.job)
     if record is None:
         raise click.UsageError(
             f'Local JOB "{options.job}" was not found; use provider:provider-job-id or '
             "a bare ID with --provider."
         )
+    selected_profile = None
+    if root.profile is not None:
+        selected_profile, profile = select_profile(loaded, root.profile, ambient=False)
+        settings = (
+            profile.providers.get(record.job.provider, ProviderConfig())
+            if profile is not None
+            else ProviderConfig()
+        )
+        candidate = resolve_route_descriptor(
+            record.job.provider,
+            api_key_env=None,
+            base_url=None,
+            header=(),
+            header_env=(),
+            profile=settings,
+        )
+        if candidate.fingerprint != record.route.fingerprint:
+            direct = record.job.provider_reference
+            raise ConfigError(
+                f'Profile "{selected_profile}" routing fingerprint does not match local '
+                f'JOB "{options.job}". Use "{direct}" with --profile '
+                f'"{selected_profile}" --save to create a distinct record.'
+            )
     route = resolve_registered_route(record.job.provider, record.route)
     return ResolvedJob(
         options.job,
         record.job.provider,
         record.job.provider_job_id,
         route,
-        registry_path,
+        selected_registry_path,
         record,
+        selected_profile,
     )
 
 
@@ -183,6 +225,15 @@ def _persist(resolved: ResolvedJob, snapshot: BatchSnapshot) -> None:
             snapshot,
             datetime.now(UTC),
         )
+        if (
+            resolved.selected_profile is not None
+            and resolved.record.job.profile != resolved.selected_profile
+        ):
+            update_job_profile(
+                resolved.registry_path,
+                resolved.record.job.record_id,
+                resolved.selected_profile,
+            )
 
 
 def _recovery_command(operation: str, resolved: ResolvedJob) -> list[str]:
@@ -208,11 +259,11 @@ def _adopt_if_requested(
 ) -> ResolvedJob:
     if not options.save:
         return resolved
-    registry_path = root.registry or default_registry_path()
+    selected_registry_path = registry_path(root.registry)
     record = adopt_job(
-        registry_path,
+        selected_registry_path,
         name=options.name,
-        profile=root.profile,
+        profile=resolved.selected_profile,
         route=resolved.route.registry,
         snapshot=snapshot,
         registered_at=datetime.now(UTC),
@@ -222,8 +273,9 @@ def _adopt_if_requested(
         resolved.provider,
         resolved.provider_job_id,
         resolved.route,
-        registry_path,
+        selected_registry_path,
         record,
+        resolved.selected_profile,
     )
 
 

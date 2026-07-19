@@ -68,15 +68,6 @@ class RegistryJob:
     route: RegistryRoute
 
 
-def default_registry_path() -> Path:
-    configured = os.environ.get("BATCHWORK_REGISTRY")
-    if configured:
-        return Path(configured)
-    data_home = os.environ.get("XDG_DATA_HOME")
-    root = Path(data_home) if data_home else Path.home() / ".local" / "share"
-    return root / "batchwork" / "registry.sqlite3"
-
-
 def insert_job(
     path: Path,
     *,
@@ -321,3 +312,8 @@ def update_job(path: Path, record_id: str, snapshot: BatchSnapshot, refreshed_at
                 record_id,
             ),
         )
+
+
+def update_job_profile(path: Path, record_id: str, profile: str) -> None:
+    with sqlite3.connect(path, timeout=5) as connection:
+        connection.execute("UPDATE jobs SET profile = ? WHERE record_id = ?", (profile, record_id))

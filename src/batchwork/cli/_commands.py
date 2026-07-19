@@ -14,7 +14,21 @@ import click
 
 from batchwork.types import BatchProvider, BatchResult
 
-from ._contract import ResultEnvelope, RunEnvelope, SnapshotEnvelope, serialize_envelope
+from ._config import API_KEY_ENV, ConfigError, load_config, registry_path, select_profile
+from ._config import config_path as resolve_config_path
+from ._contract import (
+    ConfigProviderView,
+    ConfigValidationEnvelope,
+    ConfigViewEnvelope,
+    ErrorDetail,
+    ErrorEnvelope,
+    PathsEnvelope,
+    PathState,
+    ResultEnvelope,
+    RunEnvelope,
+    SnapshotEnvelope,
+    serialize_envelope,
+)
 from ._input import INPUT_FORMATS
 from ._lifecycle import (
     LifecycleFailure,
@@ -67,6 +81,37 @@ CLI_HELP_PATHS = (
     ("registry", "check"),
     ("registry", "reset"),
 )
+
+
+class ConfigAwareGroup(click.Group):
+    def invoke(self, ctx: click.Context) -> object:
+        try:
+            return super().invoke(ctx)
+        except ConfigError as error:
+            root = ctx.obj
+            if isinstance(root, RootOptions) and root.output_mode in {
+                OutputMode.JSON,
+                OutputMode.JSONL,
+            }:
+                click.echo(
+                    serialize_envelope(
+                        ErrorEnvelope(
+                            error=ErrorDetail(
+                                code=error.code,
+                                category="configuration",
+                                message=error.message,
+                                exit_code=3,
+                                retryable=False,
+                                operation="configuration",
+                            )
+                        )
+                    ),
+                    nl=False,
+                    err=True,
+                )
+            else:
+                click.echo(f"Error: {error.message}", err=True)
+            raise click.exceptions.Exit(3) from error
 
 
 class PositiveFiniteFloat(click.ParamType):
@@ -249,7 +294,7 @@ def _selected_output_mode(human: bool, json_output: bool, jsonl: bool) -> Output
     return selected[0] if selected else None
 
 
-@click.group(context_settings=CONTEXT_SETTINGS, no_args_is_help=True)
+@click.group(cls=ConfigAwareGroup, context_settings=CONTEXT_SETTINGS, no_args_is_help=True)
 @click.option("--config", type=click.Path(path_type=Path, dir_okay=False))
 @click.option("--registry", type=click.Path(path_type=Path, dir_okay=False))
 @click.option("--profile", metavar="NAME")
@@ -708,21 +753,74 @@ def config() -> None:
 
 
 @config.command("path")
-def config_path() -> None:
+@click.pass_obj
+def config_path(root: RootOptions) -> None:
     """Show resolved configuration and registry paths."""
-    _foundation_only()
+    selected_config, _ = resolve_config_path(root.config)
+    selected_registry = registry_path(root.registry)
+    envelope = PathsEnvelope(
+        config=PathState(path=str(selected_config), exists=selected_config.is_file()),
+        registry=PathState(path=str(selected_registry), exists=selected_registry.is_file()),
+    )
+    mode = _output_mode(root)
+    if mode in {OutputMode.JSON, OutputMode.JSONL}:
+        click.echo(serialize_envelope(envelope), nl=False)
+    else:
+        click.echo(f"Config: {selected_config}\nRegistry: {selected_registry}")
 
 
 @config.command("validate")
-def config_validate() -> None:
+@click.pass_obj
+def config_validate(root: RootOptions) -> None:
     """Validate configuration without reading credential values."""
-    _foundation_only()
+    loaded = load_config(root.config)
+    document = loaded.document
+    envelope = ConfigValidationEnvelope(
+        path=str(loaded.path),
+        exists=loaded.exists,
+        valid=True,
+        config_schema_version=document.schema_version,
+        profiles=sorted(document.profiles),
+        default_profile=document.default_profile,
+    )
+    mode = _output_mode(root)
+    if mode in {OutputMode.JSON, OutputMode.JSONL}:
+        click.echo(serialize_envelope(envelope), nl=False)
+    else:
+        state = "valid" if loaded.exists else "valid (default file absent)"
+        click.echo(f"Config: {loaded.path}\nStatus: {state}")
 
 
 @config.command("show")
-def config_show() -> None:
+@click.pass_obj
+def config_show(root: RootOptions) -> None:
     """Show normalized non-secret effective configuration."""
-    _foundation_only()
+    loaded = load_config(root.config)
+    profile_name, profile = select_profile(loaded, root.profile)
+    models = {} if profile is None else profile.models
+    providers = (
+        {}
+        if profile is None
+        else {
+            provider.value: ConfigProviderView(
+                api_key_env=settings.api_key_env or API_KEY_ENV[provider],
+                base_url=settings.base_url,
+                headers=settings.headers,
+                header_env=settings.header_env,
+            )
+            for provider, settings in sorted(
+                profile.providers.items(), key=lambda item: item[0].value
+            )
+        }
+    )
+    envelope = ConfigViewEnvelope(
+        path=str(loaded.path), profile=profile_name, models=models, providers=providers
+    )
+    mode = _output_mode(root)
+    if mode in {OutputMode.JSON, OutputMode.JSONL}:
+        click.echo(serialize_envelope(envelope), nl=False)
+    else:
+        click.echo(f"Config: {loaded.path}\nProfile: {profile_name or 'none'}")
 
 
 @cli.group(no_args_is_help=True)

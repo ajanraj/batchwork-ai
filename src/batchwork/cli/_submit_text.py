@@ -11,7 +11,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
 import click
 from pydantic import TypeAdapter, ValidationError
@@ -30,6 +29,18 @@ from batchwork.types import (
     resolve_model,
 )
 
+from ._config import (
+    API_KEY_ENV,
+    BASE_URL_ENV,
+    ENVIRONMENT_NAME,
+    SENSITIVE_HEADERS,
+    ConfigError,
+    ProviderConfig,
+    load_config,
+    normalize_base_url,
+    registry_path,
+    select_profile,
+)
 from ._contract import (
     ErrorDetail,
     ErrorEnvelope,
@@ -39,27 +50,11 @@ from ._contract import (
     serialize_envelope,
 )
 from ._input import load_text_requests
-from ._registry import RegistryRoute, default_registry_path, insert_job
+from ._registry import RegistryRoute, insert_job
 from ._state import OutputMode, RootOptions
 
-_ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _RECORD_ID = re.compile(r"^bw_[0-9a-f]{32}$")
-_SENSITIVE_HEADERS = frozenset(
-    {"authorization", "cookie", "proxy-authorization", "x-api-key", "api-key"}
-)
-_API_KEY_ENV = {
-    BatchProvider.ANTHROPIC: "ANTHROPIC_API_KEY",
-    BatchProvider.GOOGLE: "GOOGLE_GENERATIVE_AI_API_KEY",
-    BatchProvider.GROQ: "GROQ_API_KEY",
-    BatchProvider.MISTRAL: "MISTRAL_API_KEY",
-    BatchProvider.OPENAI: "OPENAI_API_KEY",
-    BatchProvider.TOGETHER: "TOGETHER_API_KEY",
-    BatchProvider.XAI: "XAI_API_KEY",
-}
-_BASE_URL_ENV = {
-    provider: f"{name.removesuffix('_API_KEY')}_BASE_URL" for provider, name in _API_KEY_ENV.items()
-}
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 _MAX_PROVIDER_OPTIONS_BYTES = 1024 * 1024
 
@@ -114,7 +109,7 @@ def _reject_json_constant(value: str) -> object:
 
 
 def _environment_value(name: str, purpose: str) -> str:
-    if not _ENVIRONMENT_NAME.fullmatch(name):
+    if not ENVIRONMENT_NAME.fullmatch(name):
         raise _usage(f'{purpose} environment variable name is invalid: "{name}".')
     value = os.environ.get(name)
     if not value:
@@ -123,24 +118,10 @@ def _environment_value(name: str, purpose: str) -> str:
 
 
 def _normalized_base_url(value: str | None) -> str | None:
-    if value is None:
-        return None
-    parsed = urlsplit(value)
-    loopback = parsed.hostname in {"127.0.0.1", "::1", "localhost"}
-    if (
-        not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or (parsed.scheme != "https" and not (parsed.scheme == "http" and loopback))
-    ):
-        raise _usage(
-            "--base-url must be absolute HTTPS (HTTP allowed for loopback), without "
-            "userinfo, query, or fragment."
-        )
-    path = parsed.path.rstrip("/")
-    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+    try:
+        return normalize_base_url(value, "--base-url")
+    except ConfigError as error:
+        raise _usage(error.message) from error
 
 
 def _key_value(values: Sequence[str], label: str) -> dict[str, str]:
@@ -156,33 +137,47 @@ def _key_value(values: Sequence[str], label: str) -> dict[str, str]:
     return parsed
 
 
-def _resolve_route(
+def resolve_route_descriptor(
     provider: BatchProvider,
     *,
     api_key_env: str | None,
     base_url: str | None,
     header: Sequence[str],
     header_env: Sequence[str],
-) -> ResolvedRoute:
-    selected_key_env = api_key_env or _API_KEY_ENV[provider]
-    if provider is BatchProvider.GOOGLE and api_key_env is None:
+    profile: ProviderConfig | None = None,
+) -> RegistryRoute:
+    selected_key_env = (
+        api_key_env or (profile.api_key_env if profile else None) or API_KEY_ENV[provider]
+    )
+    if (
+        provider is BatchProvider.GOOGLE
+        and api_key_env is None
+        and not (profile and profile.api_key_env)
+    ):
         if not os.environ.get(selected_key_env) and os.environ.get("GEMINI_API_KEY"):
             selected_key_env = "GEMINI_API_KEY"
-    api_key = _environment_value(selected_key_env, "API key")
-    selected_base_url = base_url or os.environ.get(_BASE_URL_ENV[provider])
+    selected_base_url = (
+        base_url
+        if base_url is not None
+        else profile.base_url
+        if profile and profile.base_url is not None
+        else os.environ.get(BASE_URL_ENV[provider])
+    )
     normalized_base_url = _normalized_base_url(selected_base_url)
-    literal_headers = _key_value(header, "--header")
-    forbidden = _SENSITIVE_HEADERS.intersection(literal_headers)
+    literal_headers = dict(profile.headers) if profile else {}
+    header_variables = dict(profile.header_env) if profile else {}
+    command_headers = _key_value(header, "--header")
+    command_header_variables = _key_value(header_env, "--header-env")
+    forbidden = SENSITIVE_HEADERS.intersection(command_headers)
     if forbidden:
         name = sorted(forbidden)[0]
         raise _usage(f'Header "{name}" may contain secrets; use --header-env.')
-    header_variables = _key_value(header_env, "--header-env")
-    overlap = literal_headers.keys() & header_variables.keys()
-    if overlap:
-        raise _usage(f'Header "{sorted(overlap)[0]}" is configured more than once.')
-    resolved_headers = dict(literal_headers)
-    for name, variable in header_variables.items():
-        resolved_headers[name] = _environment_value(variable, f'Header "{name}"')
+    for name, value in command_headers.items():
+        header_variables.pop(name, None)
+        literal_headers[name] = value
+    for name, variable in command_header_variables.items():
+        literal_headers.pop(name, None)
+        header_variables[name] = variable
     descriptor = {
         "provider": provider.value,
         "base_url": normalized_base_url or "default",
@@ -193,14 +188,33 @@ def _resolve_route(
     canonical = json.dumps(
         descriptor, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     ).encode()
-    registry_route = RegistryRoute(
+    return RegistryRoute(
         fingerprint=hashlib.sha256(canonical).hexdigest(),
         api_key_env=selected_key_env,
         base_url=normalized_base_url,
         headers=literal_headers,
         header_env=header_variables,
     )
-    return ResolvedRoute(api_key, normalized_base_url, resolved_headers, registry_route)
+
+
+def _resolve_route(
+    provider: BatchProvider,
+    *,
+    api_key_env: str | None,
+    base_url: str | None,
+    header: Sequence[str],
+    header_env: Sequence[str],
+    profile: ProviderConfig | None = None,
+) -> ResolvedRoute:
+    route = resolve_route_descriptor(
+        provider,
+        api_key_env=api_key_env,
+        base_url=base_url,
+        header=header,
+        header_env=header_env,
+        profile=profile,
+    )
+    return resolve_registered_route(provider, route)
 
 
 def resolve_registered_route(provider: BatchProvider, route: RegistryRoute) -> ResolvedRoute:
@@ -311,9 +325,12 @@ async def submit_text(
     root: RootOptions,
     options: SubmitTextOptions,
 ) -> SubmissionResult:
-    if options.model is None:
+    loaded = load_config(root.config)
+    profile_name, profile = select_profile(loaded, root.profile)
+    selected_model = options.model or (profile.models.get("text") if profile else None)
+    if selected_model is None:
         raise _usage("--model is required for submit text.")
-    spec = _model_spec(options.model, options.endpoint)
+    spec = _model_spec(selected_model, options.endpoint)
     if options.name is not None and (
         not _JOB_NAME.fullmatch(options.name) or _RECORD_ID.fullmatch(options.name)
     ):
@@ -324,6 +341,7 @@ async def submit_text(
         base_url=options.base_url,
         header=options.header,
         header_env=options.header_env,
+        profile=profile.providers.get(spec.provider) if profile else None,
     )
     requests = load_text_requests(
         options.source,
@@ -373,14 +391,14 @@ async def submit_text(
             headers=route.headers,
         )
     registered_at = datetime.now(UTC)
-    registry_path = root.registry or default_registry_path()
+    selected_registry_path = registry_path(root.registry)
     canonical_model = f"{spec.provider.value}/{spec.model_id}"
     try:
         registered_job = insert_job(
-            registry_path,
+            selected_registry_path,
             name=options.name,
             model=canonical_model,
-            profile=root.profile,
+            profile=profile_name,
             route=route.registry,
             snapshot=job.snapshot,
             registered_at=registered_at,
@@ -394,7 +412,7 @@ async def submit_text(
             routing_fingerprint=route.registry.fingerprint,
             modality="text",
             model=canonical_model,
-            profile=root.profile,
+            profile=profile_name,
             status=job.status,
             request_counts=job.request_counts,
             provider_created_at=job.snapshot.created_at,
@@ -412,15 +430,15 @@ async def submit_text(
                 provider=job.provider,
                 job=provider_reference,
                 routing_fingerprint=route.registry.fingerprint,
-                profile=root.profile,
-                registry_path=str(registry_path),
+                profile=profile_name,
+                registry_path=str(selected_registry_path),
                 submission_outcome="accepted",
                 partial_output=True,
                 records_emitted=1,
                 recovery=Recovery(
                     action="resume_with_direct_reference",
                     command=_direct_recovery_command(
-                        provider_reference, job.provider, root, route.registry
+                        provider_reference, profile_name, route.registry
                     ),
                 ),
             )
@@ -431,15 +449,14 @@ async def submit_text(
 
 def _direct_recovery_command(
     provider_reference: str,
-    provider: BatchProvider,
-    root: RootOptions,
+    profile: str | None,
     route: RegistryRoute,
 ) -> list[str]:
     command = ["batchwork"]
-    if root.profile:
-        command.extend(["--profile", root.profile])
+    if profile:
+        command.extend(["--profile", profile])
     command.extend(["status", provider_reference])
-    if not root.profile:
+    if not profile:
         command.extend(["--api-key-env", route.api_key_env])
         if route.base_url:
             command.extend(["--base-url", route.base_url])
