@@ -10,6 +10,12 @@ from datetime import UTC, datetime
 
 import httpx
 
+from batchwork._provider_failure import (
+    ProviderFailureError,
+    http_failure,
+    protocol_failure,
+    transport_failure,
+)
 from batchwork._typing import is_string_mapping
 from batchwork.errors import BatchworkError
 from batchwork.types import BatchImage, BatchLimits, BatchResult, BatchUsage, ProviderCredentials
@@ -78,9 +84,20 @@ async def request(
     files: Mapping[str, tuple[str, bytes, str]] | None = None,
     data: Mapping[str, str] | None = None,
 ) -> httpx.Response:
-    if client is None:
-        async with httpx.AsyncClient() as owned:
-            response = await owned.request(
+    try:
+        if client is None:
+            async with httpx.AsyncClient() as owned:
+                response = await owned.request(
+                    method,
+                    url,
+                    headers=headers,
+                    content=content,
+                    files=files,
+                    data=data,
+                    follow_redirects=False,
+                )
+        else:
+            response = await client.request(
                 method,
                 url,
                 headers=headers,
@@ -89,18 +106,14 @@ async def request(
                 data=data,
                 follow_redirects=False,
             )
-    else:
-        response = await client.request(
-            method,
-            url,
-            headers=headers,
-            content=content,
-            files=files,
-            data=data,
-            follow_redirects=False,
-        )
+    except httpx.HTTPError:
+        raise ProviderFailureError(
+            "batchwork: provider request failed during transport.", transport_failure()
+        ) from None
     if not 200 <= response.status_code < 300:
-        raise BatchworkError(f"batchwork: {method} {url} failed with {response.status_code}")
+        raise ProviderFailureError(
+            f"batchwork: {method} {url} failed with {response.status_code}", http_failure(response)
+        )
     return response
 
 
@@ -112,30 +125,31 @@ async def stream_request(
     *,
     headers: Mapping[str, str] | None = None,
 ) -> AsyncIterator[httpx.Response]:
-    if client is None:
-        async with httpx.AsyncClient() as owned:
-            async with owned.stream(
-                method,
-                url,
-                headers=headers,
-                follow_redirects=False,
-            ) as response:
-                if not 200 <= response.status_code < 300:
-                    raise BatchworkError(
-                        f"batchwork: {method} {url} failed with {response.status_code}"
-                    )
-                yield response
-        return
+    try:
+        if client is None:
+            async with httpx.AsyncClient() as owned:
+                async with owned.stream(
+                    method,
+                    url,
+                    headers=headers,
+                    follow_redirects=False,
+                ) as response:
+                    _raise_for_provider_status(response, method, url)
+                    yield response
+            return
 
-    async with client.stream(
-        method,
-        url,
-        headers=headers,
-        follow_redirects=False,
-    ) as response:
-        if not 200 <= response.status_code < 300:
-            raise BatchworkError(f"batchwork: {method} {url} failed with {response.status_code}")
-        yield response
+        async with client.stream(
+            method,
+            url,
+            headers=headers,
+            follow_redirects=False,
+        ) as response:
+            _raise_for_provider_status(response, method, url)
+            yield response
+    except httpx.HTTPError:
+        raise ProviderFailureError(
+            "batchwork: provider request failed during transport.", transport_failure()
+        ) from None
 
 
 async def request_json(
@@ -147,13 +161,29 @@ async def request_json(
     content: bytes | str | None = None,
 ) -> dict[str, object]:
     response = await request(client, method, url, headers=headers, content=content)
+    return response_json(response, method, url)
+
+
+def response_json(response: httpx.Response, method: str, url: str) -> dict[str, object]:
     try:
         value = response.json()
     except ValueError as error:
-        raise BatchworkError(f"batchwork: {method} {url} returned invalid JSON.") from error
+        raise ProviderFailureError(
+            f"batchwork: {method} {url} returned invalid JSON.", protocol_failure(response)
+        ) from error
     if not isinstance(value, dict):
-        raise BatchworkError(f"batchwork: {method} {url} returned a non-object JSON response.")
+        raise ProviderFailureError(
+            f"batchwork: {method} {url} returned a non-object JSON response.",
+            protocol_failure(response),
+        )
     return value
+
+
+def _raise_for_provider_status(response: httpx.Response, method: str, url: str) -> None:
+    if not 200 <= response.status_code < 300:
+        raise ProviderFailureError(
+            f"batchwork: {method} {url} failed with {response.status_code}", http_failure(response)
+        )
 
 
 async def jsonl(response: httpx.Response) -> AsyncIterator[dict[str, object]]:
@@ -364,7 +394,7 @@ async def upload_file(
         files={"file": ("batchwork.jsonl", payload, "application/jsonl")},
         data=data or None,
     )
-    value = response.json()
+    value = response_json(response, "POST", f"{url}{endpoint}")
     if not is_string_mapping(value) or not isinstance(value.get("id"), str):
         raise BatchworkError("batchwork: provider file upload returned no file id.")
     return str(value["id"])

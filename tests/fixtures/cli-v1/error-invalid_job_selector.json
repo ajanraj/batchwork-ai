@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"error","error":{"code":"invalid_job_selector","category":"usage","message":"Example error: invalid_job_selector.","exit_code":2,"retryable":false,"operation":"status"}}

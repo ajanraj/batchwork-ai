@@ -1,9 +1,21 @@
+import json
 from importlib.metadata import version
 
 import pytest
 from click.testing import CliRunner
 
 from batchwork.cli._commands import CLI_HELP_PATHS, cli
+
+
+def test_machine_usage_failure_is_one_error_envelope() -> None:
+    result = CliRunner().invoke(cli, ["--json", "status"], prog_name="batchwork")
+
+    assert result.exit_code == 2
+    assert result.stdout == ""
+    assert len(result.stderr.splitlines()) == 1
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "usage_error"
+    assert error["operation"] == "status"
 
 
 @pytest.mark.parametrize("path", CLI_HELP_PATHS)

@@ -177,7 +177,7 @@ def test_newer_schema_fails_closed_without_changing_any_registry_file(tmp_path: 
     )
 
     assert result.exit_code == 8
-    assert json.loads(result.stderr)["error"]["code"] == "registry_read_failed"
+    assert json.loads(result.stderr)["error"]["code"] == "registry_schema_unsupported"
     assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
 
 
@@ -239,9 +239,9 @@ def test_registry_check_reports_corruption_without_replacing_file(tmp_path: Path
     )
 
     assert result.exit_code == 8
-    document = json.loads(result.stdout)
-    assert document["ok"] is False
-    assert document["integrity"] != "ok"
+    assert result.stdout == ""
+    document = json.loads(result.stderr)["error"]
+    assert document["code"] == "registry_unavailable"
     assert registry.read_bytes() == b"not sqlite"
 
 
@@ -265,8 +265,8 @@ def test_registry_check_reports_process_lock_failure_as_machine_result(
     )
 
     assert result.exit_code == 8
-    assert json.loads(result.stdout)["integrity"] == "open_failed: injected lock timeout"
-    assert result.stderr == ""
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["error"]["code"] == "registry_unavailable"
 
 
 def test_registry_reset_preserves_database_and_sidecars_as_one_recovery_set(

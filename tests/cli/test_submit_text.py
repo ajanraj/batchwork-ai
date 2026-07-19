@@ -456,8 +456,10 @@ def test_submit_text_validates_credentials_before_provider_mutation(
         ],
     )
 
-    assert result.exit_code == 2
-    assert "MISSING_KEY" in result.stderr
+    assert result.exit_code == 3
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "missing_environment_variable"
+    assert "MISSING_KEY" in error["message"]
     assert provider_requests == []
     assert "private" not in result.stderr
 
@@ -564,6 +566,42 @@ def test_accepted_job_is_emitted_with_recovery_when_registry_write_fails(
         base_url,
     ]
     assert [request[0] for request in provider_requests] == ["/v1/files", "/v1/batches"]
+
+
+def test_registry_failure_recovery_never_emits_literal_header_values(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+) -> None:
+    base_url, _ = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"hello"}\n')
+    blocked_parent = tmp_path / "not-a-directory"
+    blocked_parent.write_text("blocked")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "--registry",
+            str(blocked_parent / "registry.sqlite3"),
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_OPENAI_KEY",
+            "--header",
+            "X-Tenant=private-tenant",
+        ],
+        env={"TEST_OPENAI_KEY": "secret"},
+    )
+
+    assert result.exit_code == 8
+    assert "private-tenant" not in result.stderr
+    assert "--header" not in result.stderr
 
 
 def test_submit_text_human_output_contains_copyable_selector(

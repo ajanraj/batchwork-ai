@@ -19,6 +19,8 @@ import click
 from batchwork.errors import BatchworkError
 from batchwork.types import BatchProvider, resolve_model
 
+from ._contract import KnownErrorCode
+
 CONFIG_SCHEMA_VERSION: Literal[1] = 1
 PROFILE_ENV = "BATCHWORK_PROFILE"
 ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -43,7 +45,7 @@ BASE_URL_ENV = {
 class ConfigError(click.ClickException):
     exit_code = 3
 
-    def __init__(self, message: str, *, code: str = "invalid_configuration") -> None:
+    def __init__(self, message: str, *, code: KnownErrorCode = "config_invalid") -> None:
         super().__init__(message)
         self.code = code
 
@@ -139,7 +141,7 @@ def normalize_base_url(value: str | None, label: str = "base URL") -> str | None
     try:
         _ = parsed.port
     except ValueError as error:
-        raise ConfigError(f"{label} contains an invalid port.") from error
+        raise ConfigError(f"{label} contains an invalid port.", code="endpoint_invalid") from error
     loopback = hostname == "localhost"
     if hostname is not None:
         try:
@@ -157,7 +159,8 @@ def normalize_base_url(value: str | None, label: str = "base URL") -> str | None
     ):
         raise ConfigError(
             f"{label} must be absolute HTTPS (HTTP allowed for loopback), without "
-            "userinfo, query, or fragment."
+            "userinfo, query, or fragment.",
+            code="endpoint_invalid",
         )
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
 
@@ -201,7 +204,10 @@ def _headers(value: object, label: str, *, literal: bool) -> dict[str, str]:
         if normalized in result:
             raise ConfigError(f'{label} contains duplicate header name "{name}".')
         if literal and normalized in SENSITIVE_HEADERS:
-            raise ConfigError(f'Header "{name}" may contain secrets; use header_env.')
+            raise ConfigError(
+                f'Header "{name}" may contain secrets; use header_env.',
+                code="secret_header_literal",
+            )
         parsed = _string(item, f'{label}."{name}"')
         result[normalized] = (
             parsed if literal else validate_environment_name(parsed, f'Header "{name}"')
@@ -286,19 +292,30 @@ def load_config(explicit: Path | None, environment: Mapping[str, str] = os.envir
     path, required = config_path(explicit, environment)
     if not path.exists():
         if required:
-            raise ConfigError(f'Configuration file "{path}" does not exist.')
+            raise ConfigError(
+                f'Configuration file "{path}" does not exist.', code="config_not_found"
+            )
         return LoadedConfig(path, False, ConfigDocument())
     try:
         info = path.lstat()
     except OSError as error:
         raise ConfigError(f'Could not inspect configuration file "{path}": {error}.') from error
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        raise ConfigError(f'Configuration file "{path}" must be a regular non-symlink file.')
+        raise ConfigError(
+            f'Configuration file "{path}" must be a regular non-symlink file.',
+            code="config_insecure",
+        )
     if os.name == "posix":
         if info.st_uid != os.geteuid():
-            raise ConfigError(f'Configuration file "{path}" must be owned by the current user.')
+            raise ConfigError(
+                f'Configuration file "{path}" must be owned by the current user.',
+                code="config_insecure",
+            )
         if info.st_mode & 0o022:
-            raise ConfigError(f'Configuration file "{path}" must not be group or other writable.')
+            raise ConfigError(
+                f'Configuration file "{path}" must not be group or other writable.',
+                code="config_insecure",
+            )
     try:
         with path.open("rb") as stream:
             parsed = tomllib.load(stream)
@@ -328,5 +345,7 @@ def select_profile(
         return None, None
     profile = loaded.document.profiles.get(name)
     if profile is None:
-        raise ConfigError(f'Profile "{name}" is not defined in configuration.')
+        raise ConfigError(
+            f'Profile "{name}" is not defined in configuration.', code="profile_not_found"
+        )
     return name, profile

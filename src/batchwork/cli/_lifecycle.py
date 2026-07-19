@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-import click
-
 from batchwork.client import Batchwork
 from batchwork.types import (
     BatchProvider,
@@ -33,12 +31,22 @@ from ._contract import (
     SnapshotEnvelope,
     serialize_envelope,
 )
+from ._failures import (
+    CliFailure,
+    CliUsageError,
+    FailureContext,
+    job_state_failure,
+    provider_failure,
+)
 from ._registry import (
+    RegistryIntegrityError,
     RegistryJob,
     RegistryNameConflict,
+    RegistrySchemaError,
     adopt_job,
     get_job,
     is_job_name,
+    is_record_id,
     update_job,
 )
 from ._state import OutputMode, RootOptions
@@ -60,6 +68,7 @@ class LifecycleOptions:
     provider: str | None
     save: bool
     name: str | None
+    operation: str = "status"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,16 +98,12 @@ class LifecycleResult:
     snapshot: BatchSnapshot
     results: list[BatchResult] | None = None
     item_failed: bool = False
+    item_successes: int = 0
+    item_failures: int = 0
 
 
-class LifecycleFailure(Exception):
-    def __init__(self, envelope: ErrorEnvelope) -> None:
-        super().__init__(envelope.error.message)
-        self.envelope = envelope
-
-    @property
-    def exit_code(self) -> int:
-        return self.envelope.error.exit_code
+class LifecycleFailure(CliFailure):
+    pass
 
 
 def duration_seconds(duration: str | None) -> float | None:
@@ -122,31 +127,34 @@ def _direct_flags(options: LifecycleOptions) -> bool:
 def resolve_job(root: RootOptions, options: LifecycleOptions) -> ResolvedJob:
     loaded = load_config(root.config)
     if options.name is not None and not options.save:
-        raise click.UsageError("--name requires --save.")
+        raise CliUsageError("--name requires --save.")
     if options.name is not None and not is_job_name(options.name):
-        raise click.UsageError(
-            "--name must be 1-64 shell-safe characters and cannot be a record ID."
-        )
+        raise CliUsageError("--name must be 1-64 shell-safe characters and cannot be a record ID.")
 
     provider: BatchProvider | None = None
     provider_job_id: str | None = None
     if ":" in options.job:
         provider_name, provider_job_id = options.job.split(":", 1)
         if options.provider is not None:
-            raise click.UsageError("--provider cannot be used with a provider-qualified JOB.")
+            raise CliUsageError("--provider cannot be used with a provider-qualified JOB.")
         try:
             provider = BatchProvider(provider_name)
         except ValueError as error:
-            raise click.UsageError(f'Unknown provider in JOB: "{provider_name}".') from error
+            raise CliUsageError(
+                f'Unknown provider in JOB: "{provider_name}".', code="invalid_job_selector"
+            ) from error
         if not provider_job_id:
-            raise click.UsageError("Provider-qualified JOB must include a provider job ID.")
+            raise CliUsageError(
+                "Provider-qualified JOB must include a provider job ID.",
+                code="invalid_job_selector",
+            )
     elif options.provider is not None:
         provider = BatchProvider(options.provider)
         provider_job_id = options.job
 
     if provider is not None and provider_job_id is not None:
         if root.profile is not None and _direct_flags(options):
-            raise click.UsageError("--profile cannot be combined with direct routing flags.")
+            raise CliUsageError("--profile cannot be combined with direct routing flags.")
         profile_name, profile = select_profile(loaded, root.profile)
         route = _resolve_route(
             provider,
@@ -165,17 +173,29 @@ def resolve_job(root: RootOptions, options: LifecycleOptions) -> ResolvedJob:
         )
 
     if options.save or _direct_flags(options):
-        raise click.UsageError(
+        raise CliUsageError(
             "Direct routing options require provider:provider-job-id or --provider."
+        )
+    if not is_record_id(options.job) and not is_job_name(options.job):
+        raise CliUsageError(
+            "JOB must be a local alias, record ID, provider reference, or bare ID with --provider.",
+            code="invalid_job_selector",
         )
     selected_registry_path = registry_path(root.registry)
     try:
         record = get_job(selected_registry_path, options.job)
     except (OSError, sqlite3.Error) as error:
+        code = (
+            "registry_schema_unsupported"
+            if isinstance(error, RegistrySchemaError)
+            else "registry_integrity_failed"
+            if isinstance(error, RegistryIntegrityError)
+            else "registry_unavailable"
+        )
         raise LifecycleFailure(
             ErrorEnvelope(
                 error=ErrorDetail(
-                    code="registry_read_failed",
+                    code=code,
                     category="local_state",
                     message=(
                         f"Could not read local registry: {error}. No provider operation was "
@@ -183,15 +203,27 @@ def resolve_job(root: RootOptions, options: LifecycleOptions) -> ResolvedJob:
                     ),
                     exit_code=8,
                     retryable=False,
-                    operation="resolve",
+                    operation=options.operation,
                     registry_path=str(selected_registry_path),
                 )
             )
         ) from error
     if record is None:
-        raise click.UsageError(
-            f'Local JOB "{options.job}" was not found; use provider:provider-job-id or '
-            "a bare ID with --provider."
+        raise LifecycleFailure(
+            ErrorEnvelope(
+                error=ErrorDetail(
+                    code="local_job_not_found",
+                    category="local_state",
+                    message=(
+                        f'Local JOB "{options.job}" was not found. No provider operation was '
+                        "attempted; use a direct provider reference or run batchwork list."
+                    ),
+                    exit_code=8,
+                    retryable=False,
+                    operation=options.operation,
+                    registry_path=str(selected_registry_path),
+                )
+            )
         )
     selected_profile = None
     if root.profile is not None:
@@ -238,6 +270,52 @@ def _ref(resolved: ResolvedJob) -> BatchRef:
     )
 
 
+def _failure_context(operation: str, resolved: ResolvedJob) -> FailureContext:
+    return FailureContext(
+        operation=operation,
+        provider=resolved.provider,
+        job=resolved.machine_job,
+        routing_fingerprint=resolved.machine_fingerprint,
+        profile=resolved.selected_profile,
+        registry_path=(str(resolved.registry_path) if resolved.registry_path is not None else None),
+    )
+
+
+def _lifecycle_provider_failure(
+    error: BaseException,
+    operation: str,
+    resolved: ResolvedJob,
+    *,
+    result_stream: bool = False,
+    records_emitted: int = 0,
+    item_successes: int = 0,
+    item_failures: int = 0,
+    cancellation_refresh: bool = False,
+) -> LifecycleFailure | None:
+    failure = provider_failure(
+        error,
+        _failure_context(operation, resolved),
+        result_stream=result_stream,
+        records_emitted=records_emitted,
+        item_successes=item_successes,
+        item_failures=item_failures,
+        cancellation_refresh=cancellation_refresh,
+    )
+    if failure is None:
+        return None
+    if cancellation_refresh:
+        detail = failure.envelope.error.model_copy(
+            update={
+                "recovery": Recovery(
+                    action="check_status",
+                    command=_recovery_command("status", resolved),
+                )
+            }
+        )
+        return LifecycleFailure(ErrorEnvelope(error=detail))
+    return LifecycleFailure(failure.envelope)
+
+
 def _persist(resolved: ResolvedJob, snapshot: BatchSnapshot) -> None:
     if (
         resolved.registry_path is not None
@@ -266,8 +344,6 @@ def _recovery_command(operation: str, resolved: ResolvedJob) -> list[str]:
     command.extend(["--api-key-env", route.api_key_env])
     if route.base_url:
         command.extend(["--base-url", route.base_url])
-    for name, value in sorted(route.headers.items()):
-        command.extend(["--header", f"{name}={value}"])
     for name, variable in sorted(route.header_env.items()):
         command.extend(["--header-env", f"{name}={variable}"])
     return command
@@ -287,7 +363,7 @@ def _persist_or_fail(operation: str, resolved: ResolvedJob, snapshot: BatchSnaps
         raise LifecycleFailure(
             ErrorEnvelope(
                 error=ErrorDetail(
-                    code="registry_write_failed",
+                    code="registry_unavailable",
                     category="local_state",
                     message=(
                         "The provider operation succeeded, but Batchwork could not update the "
@@ -316,6 +392,7 @@ def _adopt_if_requested(
     options: LifecycleOptions,
     resolved: ResolvedJob,
     snapshot: BatchSnapshot,
+    operation: str,
 ) -> ResolvedJob:
     if not options.save:
         return resolved
@@ -341,12 +418,12 @@ def _adopt_if_requested(
         raise LifecycleFailure(
             ErrorEnvelope(
                 error=ErrorDetail(
-                    code="registry_name_conflict" if conflict else "registry_write_failed",
+                    code="registry_unavailable",
                     category="local_state",
                     message=message,
                     exit_code=8,
                     retryable=False,
-                    operation="adopt",
+                    operation=operation,
                     provider=resolved.provider,
                     job=f"{resolved.provider.value}:{resolved.provider_job_id}",
                     routing_fingerprint=resolved.route.registry.fingerprint,
@@ -377,10 +454,16 @@ def _adopt_if_requested(
 
 async def status_job(root: RootOptions, options: LifecycleOptions) -> LifecycleResult:
     resolved = resolve_job(root, options)
-    async with Batchwork() as client:
-        job = await client.get_batch(_ref(resolved))
+    try:
+        async with Batchwork() as client:
+            job = await client.get_batch(_ref(resolved))
+    except Exception as error:
+        failure = _lifecycle_provider_failure(error, "status", resolved)
+        if failure is None:
+            raise
+        raise failure from error
     _persist_or_fail("status", resolved, job.snapshot)
-    resolved = _adopt_if_requested(root, options, resolved, job.snapshot)
+    resolved = _adopt_if_requested(root, options, resolved, job.snapshot, "status")
     return LifecycleResult(resolved, job.snapshot)
 
 
@@ -394,20 +477,26 @@ async def wait_job(
     resolved = resolve_job(root, options)
     started = time.monotonic()
     try:
-        async with asyncio.timeout(timeout_seconds):
-            async with Batchwork() as client:
-                job = await client.get_batch(_ref(resolved))
-                snapshot = job.snapshot
-                _persist_or_fail("wait", resolved, snapshot)
-                while not is_terminal_status(snapshot.status):
-                    if timeout_seconds is None:
-                        sleep_for = poll_interval
-                    else:
-                        remaining = timeout_seconds - (time.monotonic() - started)
-                        sleep_for = min(poll_interval, max(0.0, remaining))
-                    await asyncio.sleep(sleep_for)
-                    snapshot = await job.poll()
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                async with Batchwork() as client:
+                    job = await client.get_batch(_ref(resolved))
+                    snapshot = job.snapshot
                     _persist_or_fail("wait", resolved, snapshot)
+                    while not is_terminal_status(snapshot.status):
+                        if timeout_seconds is None:
+                            sleep_for = poll_interval
+                        else:
+                            remaining = timeout_seconds - (time.monotonic() - started)
+                            sleep_for = min(poll_interval, max(0.0, remaining))
+                        await asyncio.sleep(sleep_for)
+                        snapshot = await job.poll()
+                        _persist_or_fail("wait", resolved, snapshot)
+        except Exception as error:
+            failure = _lifecycle_provider_failure(error, "wait", resolved)
+            if failure is None:
+                raise
+            raise failure from error
     except TimeoutError:
         raise LifecycleFailure(
             ErrorEnvelope(
@@ -430,7 +519,7 @@ async def wait_job(
                 )
             )
         ) from None
-    resolved = _adopt_if_requested(root, options, resolved, snapshot)
+    resolved = _adopt_if_requested(root, options, resolved, snapshot, "wait")
     return LifecycleResult(resolved, snapshot)
 
 
@@ -438,7 +527,7 @@ def _nonterminal_failure(resolved: ResolvedJob, snapshot: BatchSnapshot) -> Life
     return LifecycleFailure(
         ErrorEnvelope(
             error=ErrorDetail(
-                code="results_not_terminal",
+                code="results_not_ready",
                 category="job_state",
                 message=(
                     f'Results are unavailable while job "{resolved.machine_job}" is '
@@ -466,35 +555,95 @@ async def results_job(
     on_result: Callable[[ResolvedJob, BatchResult], None] | None = None,
 ) -> LifecycleResult:
     resolved = resolve_job(root, options)
-    async with Batchwork() as client:
-        job = await client.get_batch(_ref(resolved))
-        _persist_or_fail("results", resolved, job.snapshot)
-        if not is_terminal_status(job.status):
-            raise _nonterminal_failure(resolved, job.snapshot)
-        results: list[BatchResult] | None = [] if on_result is None else None
-        item_failed = False
-        async for item in job._results_from_current_snapshot():
-            item_failed = item_failed or item.status is not BatchResultStatus.SUCCEEDED
-            if on_result is None:
-                if results is None:
-                    raise RuntimeError("batchwork: missing buffered result collection")
-                results.append(item)
-            else:
-                on_result(resolved, item)
-    resolved = _adopt_if_requested(root, options, resolved, job.snapshot)
-    return LifecycleResult(resolved, job.snapshot, results, item_failed)
+    results: list[BatchResult] | None = [] if on_result is None else None
+    item_successes = 0
+    item_failures = 0
+    snapshot: BatchSnapshot | None = None
+    try:
+        async with Batchwork() as client:
+            job = await client.get_batch(_ref(resolved))
+            snapshot = job.snapshot
+            _persist_or_fail("results", resolved, job.snapshot)
+            if not is_terminal_status(job.status):
+                raise _nonterminal_failure(resolved, job.snapshot)
+            async for item in job._results_from_current_snapshot():
+                if item.status is BatchResultStatus.SUCCEEDED:
+                    item_successes += 1
+                else:
+                    item_failures += 1
+                if on_result is None:
+                    if results is None:
+                        raise RuntimeError("batchwork: missing buffered result collection")
+                    results.append(item)
+                else:
+                    on_result(resolved, item)
+    except Exception as error:
+        if (
+            snapshot is not None
+            and is_terminal_status(snapshot.status)
+            and snapshot.status is not BatchStatus.COMPLETED
+        ):
+            mapped = provider_failure(error, _failure_context("results", resolved))
+            if mapped is not None:
+                state = job_state_failure(
+                    snapshot.status,
+                    _failure_context("results", resolved),
+                    item_successes=item_successes,
+                    item_failures=item_failures,
+                    secondary_retrieval_failed=True,
+                    recovery_command=_recovery_command("status", resolved),
+                )
+                raise LifecycleFailure(state.envelope) from error
+        failure = _lifecycle_provider_failure(
+            error,
+            "results",
+            resolved,
+            result_stream=True,
+            records_emitted=item_successes + item_failures,
+            item_successes=item_successes,
+            item_failures=item_failures,
+        )
+        if failure is None:
+            raise
+        raise failure from error
+    resolved = _adopt_if_requested(root, options, resolved, job.snapshot, "results")
+    return LifecycleResult(
+        resolved,
+        job.snapshot,
+        results,
+        bool(item_failures),
+        item_successes,
+        item_failures,
+    )
 
 
 async def cancel_job(root: RootOptions, options: LifecycleOptions) -> LifecycleResult:
     resolved = resolve_job(root, options)
-    async with Batchwork() as client:
-        job = await client.get_batch(_ref(resolved))
-        if not is_terminal_status(job.status):
-            snapshot = await job.cancel()
-        else:
-            snapshot = job.snapshot
+    try:
+        async with Batchwork() as client:
+            job = await client.get_batch(_ref(resolved))
+            if not is_terminal_status(job.status):
+                await job._request_cancel()
+                try:
+                    snapshot = await job.poll()
+                except Exception as error:
+                    failure = _lifecycle_provider_failure(
+                        error, "cancel", resolved, cancellation_refresh=True
+                    )
+                    if failure is None:
+                        raise
+                    raise failure from error
+            else:
+                snapshot = job.snapshot
+    except Exception as error:
+        if isinstance(error, LifecycleFailure):
+            raise
+        failure = _lifecycle_provider_failure(error, "cancel", resolved)
+        if failure is None:
+            raise
+        raise failure from error
     _persist_or_fail("cancel", resolved, snapshot)
-    resolved = _adopt_if_requested(root, options, resolved, snapshot)
+    resolved = _adopt_if_requested(root, options, resolved, snapshot, "cancel")
     return LifecycleResult(resolved, snapshot)
 
 

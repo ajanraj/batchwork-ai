@@ -7,6 +7,9 @@ from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
 from batchwork.cli._contract import (
+    CANONICAL_ERROR_CODES,
+    ERROR_CODE_CATEGORIES,
+    EXIT_CODE_BY_CATEGORY,
     FIXTURE_DIRECTORY,
     SCHEMA_PATH,
     ImageManifestEntry,
@@ -30,6 +33,19 @@ def test_checked_in_schema_and_fixtures_match_typed_contract() -> None:
 
 def test_public_schema_is_valid_draft_2020_12() -> None:
     Draft202012Validator.check_schema(json.loads(SCHEMA_PATH.read_text()))
+
+
+def test_canonical_error_fixtures_cover_exactly_the_stable_catalog() -> None:
+    expected_names = {f"error-{code}.json" for code in CANONICAL_ERROR_CODES}
+    actual_paths = set(FIXTURE_DIRECTORY.glob("error-*.json"))
+
+    assert {path.name for path in actual_paths} == expected_names
+    documents = [json.loads(path.read_text()) for path in actual_paths]
+    assert {document["error"]["code"] for document in documents} == set(CANONICAL_ERROR_CODES)
+    for document in documents:
+        error = document["error"]
+        assert error["category"] == ERROR_CODE_CATEGORIES[error["code"]]
+        assert error["exit_code"] == EXIT_CODE_BY_CATEGORY[error["category"]]
 
 
 @pytest.mark.parametrize("path", sorted(FIXTURE_DIRECTORY.glob("*.json")))
@@ -67,6 +83,14 @@ def test_machine_contract_rejects_non_finite_numbers() -> None:
 
     with pytest.raises(ValidationError, match="finite"):
         ResultEnvelope(job="bw_0123456789abcdef0123456789abcdef", result=result)
+
+
+def test_machine_contract_rejects_inconsistent_error_category_or_exit_code() -> None:
+    document = json.loads(fixture_documents()["error-wait_timeout.json"])
+    document["error"]["exit_code"] = 6
+
+    with pytest.raises(ValidationError, match="requires exit code"):
+        envelope_adapter().validate_python(document)
 
 
 def test_materialization_requires_absolute_output_and_fixed_manifest_name() -> None:

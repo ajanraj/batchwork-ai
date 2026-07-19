@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"error","error":{"code":"internal_error","category":"internal","message":"Example error: internal_error.","exit_code":1,"retryable":false,"operation":"status"}}
