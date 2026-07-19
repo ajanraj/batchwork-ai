@@ -160,6 +160,100 @@ def test_installed_submit_text_emits_job_and_persists_metadata_only(
 
 
 @pytest.mark.parametrize(
+    ("filename", "contents", "input_format"),
+    (
+        ("requests.json", '{"prompt":"hello"}', None),
+        ("requests.jsonl", '{"prompt":"hello"}\n', None),
+        ("requests.csv", "prompt,temperature\nhello,0.2\n", None),
+        ("requests.txt", "hello\n", None),
+        (None, '{"prompt":"hello"}', "json"),
+    ),
+)
+def test_submit_text_accepts_every_transport_and_explicit_stdin(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+    filename: str | None,
+    contents: str,
+    input_format: str | None,
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = "-"
+    if filename is not None:
+        path = tmp_path / filename
+        path.write_text(contents)
+        source = str(path)
+    arguments = [
+        "--registry",
+        str(tmp_path / "registry.sqlite3"),
+        "submit",
+        "text",
+        source,
+        "--model",
+        "openai/gpt-test",
+        "--base-url",
+        base_url,
+    ]
+    if input_format is not None:
+        arguments.extend(["--format", input_format])
+
+    result = CliRunner().invoke(
+        cli,
+        arguments,
+        input=contents if filename is None else None,
+        env={"OPENAI_API_KEY": "secret"},
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert [request[0] for request in provider_requests] == ["/v1/files", "/v1/batches"]
+    assert b'"custom_id":"request-0"' in provider_requests[0][2]
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "message"),
+    (
+        (
+            "requests.json",
+            '[{"prompt":"valid"},{"prompt":"also valid","unknown":true}]',
+            "JSON index 1",
+        ),
+        (
+            "requests.csv",
+            "prompt,max_output_tokens\nvalid,1\nalso valid,nope\n",
+            "row 3, column max_output_tokens",
+        ),
+    ),
+)
+def test_submit_text_rejects_invalid_structured_source_before_provider_mutation(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+    filename: str,
+    contents: str,
+    message: str,
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / filename
+    source.write_text(contents)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--base-url",
+            base_url,
+        ],
+        env={"OPENAI_API_KEY": "secret"},
+    )
+
+    assert result.exit_code == 2
+    assert message in result.stderr
+    assert provider_requests == []
+
+
+@pytest.mark.parametrize(
     ("contents", "message"),
     (
         ('{"prompt":"valid"}\nnot-json\n', "line 2"),

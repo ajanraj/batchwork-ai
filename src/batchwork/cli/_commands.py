@@ -15,6 +15,7 @@ import click
 from batchwork.types import BatchProvider, BatchResult
 
 from ._contract import ResultEnvelope, RunEnvelope, SnapshotEnvelope, serialize_envelope
+from ._input import INPUT_FORMATS
 from ._lifecycle import (
     LifecycleFailure,
     LifecycleOptions,
@@ -38,7 +39,7 @@ CommandFunction = TypeVar("CommandFunction", bound=Callable[..., object])
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 PROVIDER = click.Choice([provider.value for provider in BatchProvider], case_sensitive=True)
-FORMAT = click.Choice(["json", "jsonl", "csv", "text"], case_sensitive=True)
+FORMAT = click.Choice(INPUT_FORMATS, case_sensitive=True)
 DURATION_PATTERN = re.compile(r"^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[smhd]$")
 
 CLI_HELP_PATHS = (
