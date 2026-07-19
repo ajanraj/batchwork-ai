@@ -23,7 +23,6 @@ from batchwork.types import (
     BatchDefaults,
     BatchLimits,
     BatchProvider,
-    BatchRequest,
     JsonValue,
     ModelKind,
     ModelSpec,
@@ -39,6 +38,7 @@ from ._contract import (
     Recovery,
     serialize_envelope,
 )
+from ._input import load_text_requests
 from ._registry import RegistryRoute, default_registry_path, insert_job
 from ._state import OutputMode, RootOptions
 
@@ -61,8 +61,6 @@ _BASE_URL_ENV = {
     provider: f"{name.removesuffix('_API_KEY')}_BASE_URL" for provider, name in _API_KEY_ENV.items()
 }
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
-_MAX_SOURCE_BYTES = 256 * 1024 * 1024
-_MAX_LINE_BYTES = 24 * 1024 * 1024
 _MAX_PROVIDER_OPTIONS_BYTES = 1024 * 1024
 
 
@@ -113,91 +111,6 @@ def _usage(message: str) -> click.UsageError:
 
 def _reject_json_constant(value: str) -> object:
     raise ValueError(f"non-finite JSON number {value}")
-
-
-def _bounded_source_lines(source: Path) -> list[str]:
-    lines: list[str] = []
-    total = 0
-    try:
-        with source.open("rb") as stream:
-            while True:
-                remaining = _MAX_SOURCE_BYTES - total
-                read_limit = min(_MAX_LINE_BYTES + 3, remaining + 1)
-                raw_line = stream.readline(read_limit)
-                if not raw_line:
-                    break
-                total += len(raw_line)
-                if total > _MAX_SOURCE_BYTES:
-                    raise _usage(f"SOURCE exceeds the {_MAX_SOURCE_BYTES} byte transport limit.")
-                content = raw_line.removesuffix(b"\n").removesuffix(b"\r")
-                if len(content) > _MAX_LINE_BYTES:
-                    raise _usage(
-                        f"SOURCE line {len(lines) + 1} exceeds the {_MAX_LINE_BYTES} byte limit."
-                    )
-                encoding = "utf-8-sig" if not lines else "utf-8"
-                lines.append(content.decode(encoding))
-    except click.UsageError:
-        raise
-    except (OSError, UnicodeError) as error:
-        raise _usage(f'Could not read SOURCE "{source}": {error}.') from error
-    return lines
-
-
-def _jsonl_requests(source: Path, input_format: str | None) -> list[BatchRequest]:
-    if source == Path("-"):
-        raise _usage("submit text currently requires one JSONL file; stdin support follows in #20.")
-    if input_format not in (None, "jsonl"):
-        raise _usage("submit text currently accepts JSONL only.")
-    if input_format is None and source.suffix.lower() != ".jsonl":
-        raise _usage('SOURCE must end in ".jsonl" or use --format jsonl.')
-    if not source.exists():
-        raise _usage(f'SOURCE does not exist: "{source}".')
-    if not source.is_file():
-        raise _usage(f'SOURCE must be a regular file: "{source}".')
-    lines = _bounded_source_lines(source)
-
-    requests: list[BatchRequest] = []
-    coordinates: list[int] = []
-    for line_number, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-        try:
-            json.loads(line, parse_constant=_reject_json_constant)
-            document = _JSON_OBJECT.validate_json(line)
-            for field_name, field in BatchRequest.model_fields.items():
-                alias = field.alias
-                if alias is not None and alias != field_name:
-                    if field_name in document and alias in document:
-                        raise _usage(
-                            f'Invalid JSONL object at line {line_number}: "{field_name}" and '
-                            f'"{alias}" cannot both be present.'
-                        )
-            request = BatchRequest.model_validate(document)
-        except json.JSONDecodeError as error:
-            raise _usage(f"Invalid JSONL object at line {line_number}: {error.msg}.") from error
-        except ValidationError as error:
-            detail = error.errors(include_url=False)[0]["msg"]
-            raise _usage(f"Invalid JSONL object at line {line_number}: {detail}.") from error
-        except ValueError as error:
-            raise _usage(f"Invalid JSONL object at line {line_number}: {error}.") from error
-        requests.append(request)
-        coordinates.append(line_number)
-    if not requests:
-        raise _usage("SOURCE must contain at least one non-empty JSONL object.")
-
-    seen: dict[str, int] = {}
-    normalized: list[BatchRequest] = []
-    for index, (request, line_number) in enumerate(zip(requests, coordinates, strict=True)):
-        custom_id = request.custom_id or f"request-{index}"
-        previous_line = seen.get(custom_id)
-        if previous_line is not None:
-            raise _usage(
-                f'Invalid custom_id "{custom_id}" at line {line_number}: '
-                f"already used at line {previous_line}."
-            )
-        seen[custom_id] = line_number
-        normalized.append(request.model_copy(update={"custom_id": custom_id}))
-    return normalized
 
 
 def _environment_value(name: str, purpose: str) -> str:
@@ -412,7 +325,11 @@ async def submit_text(
         header=options.header,
         header_env=options.header_env,
     )
-    requests = _jsonl_requests(options.source, options.input_format)
+    requests = load_text_requests(
+        options.source,
+        options.input_format,
+        stdin=click.get_binary_stream("stdin") if options.source == Path("-") else None,
+    )
     defaults = _defaults(
         provider_options=_provider_options(
             spec.provider, options.provider_options, options.provider_options_file
