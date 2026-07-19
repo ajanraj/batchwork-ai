@@ -328,6 +328,67 @@ def test_installed_status_accepts_saved_alias_and_bare_explicit_provider(
     assert handler.requests == [("GET", "/v1/batches/batch_123")]
 
 
+def test_direct_lifecycle_bypasses_corrupt_registry(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    registry = tmp_path / "registry.sqlite3"
+    registry.write_bytes(b"not sqlite")
+
+    result = subprocess.run(
+        [
+            _batchwork(),
+            "--json",
+            "--registry",
+            str(registry),
+            "status",
+            *_direct(base_url),
+        ],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["snapshot"]["status"] == "completed"
+    assert registry.read_bytes() == b"not sqlite"
+    assert handler.requests == [("GET", "/v1/batches/batch_123")]
+
+
+def test_local_lifecycle_fails_closed_on_corrupt_registry(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    _, handler = lifecycle_provider
+    registry = tmp_path / "registry.sqlite3"
+    registry.write_bytes(b"not sqlite")
+
+    result = subprocess.run(
+        [
+            _batchwork(),
+            "--json",
+            "--registry",
+            str(registry),
+            "status",
+            "local-name",
+        ],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 8
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["error"]["code"] == "registry_read_failed"
+    assert registry.read_bytes() == b"not sqlite"
+    assert handler.requests == []
+
+
 def test_adoption_alias_collision_preserves_registry_and_returns_direct_recovery(
     tmp_path: Path,
     lifecycle_provider: tuple[str, type[_LifecycleHandler]],
