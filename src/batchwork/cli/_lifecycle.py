@@ -193,8 +193,8 @@ def _retryable_read_failure(error: BaseException) -> bool:
 def _retry_delay(error: BaseException, retry_index: int) -> float:
     if isinstance(error, ProviderFailureError):
         retry_after = error.failure.retry_after_seconds
-        if retry_after is not None and retry_after <= _MAX_RETRY_DELAY_SECONDS:
-            return float(retry_after)
+        if retry_after is not None:
+            return min(float(retry_after), _MAX_RETRY_DELAY_SECONDS)
     ceiling = min(0.25 * (2**retry_index), _MAX_RETRY_DELAY_SECONDS)
     return random.uniform(ceiling / 2, ceiling)
 

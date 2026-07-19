@@ -11,7 +11,9 @@ import pytest
 from click.testing import CliRunner
 
 import batchwork.cli._commands as commands_module
+from batchwork._provider_failure import ProviderFailure, ProviderFailureError, ProviderFailureKind
 from batchwork.cli._commands import cli
+from batchwork.cli._lifecycle import _retry_delay
 
 
 class _FailureHandler(BaseHTTPRequestHandler):
@@ -45,6 +47,19 @@ class _FailureHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         return
+
+
+def test_retry_after_is_capped_at_sixty_seconds() -> None:
+    error = ProviderFailureError(
+        "safe",
+        ProviderFailure(
+            ProviderFailureKind.UNAVAILABLE,
+            status_code=503,
+            retry_after_seconds=3600,
+        ),
+    )
+
+    assert _retry_delay(error, 0) == 60
 
 
 @pytest.fixture
@@ -89,6 +104,7 @@ def _status(base_url: str) -> list[str]:
 )
 def test_provider_http_failures_map_to_safe_exact_envelopes(
     failure_provider: tuple[str, type[_FailureHandler]],
+    monkeypatch: pytest.MonkeyPatch,
     status: int,
     code: str,
     category: str,
@@ -96,6 +112,7 @@ def test_provider_http_failures_map_to_safe_exact_envelopes(
 ) -> None:
     base_url, handler = failure_provider
     handler.status = status
+    monkeypatch.setattr("batchwork.cli._lifecycle._retry_delay", lambda *_: 0)
 
     result = CliRunner().invoke(
         cli,

@@ -25,6 +25,7 @@ class _LifecycleHandler(BaseHTTPRequestHandler):
     snapshot_http_statuses: ClassVar[list[int]] = [200]
     snapshot_retry_after: ClassVar[str | None] = None
     break_result_stream_after_first: ClassVar[bool] = False
+    batch_create_gate: ClassVar[threading.Event | None] = None
 
     def _json(self, document: object) -> None:
         encoded = json.dumps(document).encode()
@@ -41,6 +42,8 @@ class _LifecycleHandler(BaseHTTPRequestHandler):
         if self.path == "/v1/files":
             self._json({"id": "file-input"})
         elif self.path == "/v1/batches":
+            if self.batch_create_gate is not None:
+                self.batch_create_gate.wait(timeout=5)
             self._json(
                 {
                     "id": "batch_123",
@@ -127,6 +130,7 @@ def lifecycle_provider() -> tuple[str, type[_LifecycleHandler]]:
     _LifecycleHandler.snapshot_http_statuses = [200]
     _LifecycleHandler.snapshot_retry_after = None
     _LifecycleHandler.break_result_stream_after_first = False
+    _LifecycleHandler.batch_create_gate = None
     server = ThreadingHTTPServer(("127.0.0.1", 0), _LifecycleHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1031,6 +1035,61 @@ def test_installed_wait_signal_preserves_remote_job(
     assert error["item_failures"] == 0
     assert error["recovery"]["command"][:3] == ["batchwork", "wait", "openai:batch_123"]
     assert all(path != "/v1/batches/batch_123/cancel" for _, path in handler.requests)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal exit contract")
+@pytest.mark.parametrize(
+    ("process_signal", "exit_code", "error_code"),
+    ((signal.SIGINT, 130, "interrupted"), (signal.SIGTERM, 143, "terminated")),
+)
+def test_signal_during_submission_reports_unknown_outcome_without_retry(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+    process_signal: signal.Signals,
+    exit_code: int,
+    error_code: str,
+) -> None:
+    base_url, handler = lifecycle_provider
+    handler.batch_create_gate = threading.Event()
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"private"}\n')
+    process = subprocess.Popen(
+        [
+            _batchwork(),
+            "--json",
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_OPENAI_KEY",
+        ],
+        cwd=tmp_path,
+        env=_environment(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 5
+    while ("POST", "/v1/batches") not in handler.requests and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert ("POST", "/v1/batches") in handler.requests
+
+    process.send_signal(process_signal)
+    stdout, stderr = process.communicate(timeout=5)
+    handler.batch_create_gate.set()
+
+    assert process.returncode == exit_code
+    assert stdout == ""
+    error = json.loads(stderr)["error"]
+    assert error["code"] == error_code
+    assert error["submission_outcome"] == "unknown"
+    assert error["recovery"] == {"action": "inspect_provider_account"}
+    assert "Do not resubmit blindly" in error["message"]
+    assert handler.requests.count(("POST", "/v1/batches")) == 1
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signal exit contract")

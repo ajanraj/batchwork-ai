@@ -49,7 +49,13 @@ from ._contract import (
     Recovery,
     serialize_envelope,
 )
-from ._failures import FailureContext, provider_failure
+from ._failures import (
+    CliFailure,
+    FailureContext,
+    InterruptionRequested,
+    TerminationRequested,
+    provider_failure,
+)
 from ._input import load_text_requests
 from ._registry import RegistryRoute, insert_job
 from ._state import OutputMode, RootOptions
@@ -58,6 +64,7 @@ _JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _RECORD_ID = re.compile(r"^bw_[0-9a-f]{32}$")
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 _MAX_PROVIDER_OPTIONS_BYTES = 1024 * 1024
+_active_submission_context: FailureContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +106,41 @@ class SubmitTextOptions:
     stop: Sequence[str]
     tool_choice: str | None
     endpoint: str | None
+
+
+def active_submission_signal_failure(*, interrupted: bool) -> CliFailure | None:
+    context = _active_submission_context
+    if context is None:
+        return None
+    return _unknown_submission_signal_failure(interrupted, context)
+
+
+def _unknown_submission_signal_failure(
+    interrupted: bool,
+    context: FailureContext,
+) -> CliFailure:
+    action = "interrupted" if interrupted else "terminated"
+    return CliFailure(
+        ErrorEnvelope(
+            error=ErrorDetail(
+                code=action,
+                category=action,
+                message=(
+                    f"Batch submission was {action} before provider acceptance could be "
+                    "confirmed. Do not resubmit blindly; inspect the provider account first "
+                    "because resubmission may duplicate work or cost."
+                ),
+                exit_code=130 if interrupted else 143,
+                retryable=False,
+                operation="submit",
+                provider=context.provider,
+                routing_fingerprint=context.routing_fingerprint,
+                profile=context.profile,
+                submission_outcome="unknown",
+                recovery=Recovery(action="inspect_provider_account"),
+            )
+        )
+    )
 
 
 def _usage(message: str) -> click.UsageError:
@@ -329,6 +371,7 @@ async def submit_text(
     root: RootOptions,
     options: SubmitTextOptions,
 ) -> SubmissionResult:
+    global _active_submission_context
     loaded = load_config(root.config)
     profile_name, profile = select_profile(loaded, root.profile)
     selected_model = options.model or (profile.models.get("text") if profile else None)
@@ -383,6 +426,13 @@ async def submit_text(
             "--allow-large-batch."
         )
 
+    submission_context = FailureContext(
+        operation="submit",
+        provider=spec.provider,
+        routing_fingerprint=route.registry.fingerprint,
+        profile=profile_name,
+    )
+    _active_submission_context = submission_context
     try:
         async with Batchwork() as client:
             job = await client.batch(
@@ -395,23 +445,38 @@ async def submit_text(
                 base_url=route.base_url,
                 headers=route.headers,
             )
+    except (InterruptionRequested, TerminationRequested) as error:
+        _active_submission_context = None
+        raise _unknown_submission_signal_failure(
+            isinstance(error, InterruptionRequested), submission_context
+        ) from None
     except Exception as error:
+        _active_submission_context = None
         failure = provider_failure(
             error,
-            FailureContext(
-                operation="submit",
-                provider=spec.provider,
-                routing_fingerprint=route.registry.fingerprint,
-                profile=profile_name,
-            ),
+            submission_context,
             submission=True,
         )
         if failure is None:
             raise
         raise failure from error
+    _active_submission_context = None
     registered_at = datetime.now(UTC)
     selected_registry_path = registry_path(root.registry)
     canonical_model = f"{spec.provider.value}/{spec.model_id}"
+    provider_reference = f"{job.provider.value}:{job.id}"
+    direct_job = Job(
+        provider=job.provider,
+        provider_job_id=job.id,
+        provider_reference=provider_reference,
+        routing_fingerprint=route.registry.fingerprint,
+        modality="text",
+        model=canonical_model,
+        profile=profile_name,
+        status=job.status,
+        request_counts=job.request_counts,
+        provider_created_at=job.snapshot.created_at,
+    )
     try:
         registered_job = insert_job(
             selected_registry_path,
@@ -422,20 +487,40 @@ async def submit_text(
             snapshot=job.snapshot,
             registered_at=registered_at,
         )
-    except (OSError, sqlite3.Error):
-        provider_reference = f"{job.provider.value}:{job.id}"
-        direct_job = Job(
-            provider=job.provider,
-            provider_job_id=job.id,
-            provider_reference=provider_reference,
-            routing_fingerprint=route.registry.fingerprint,
-            modality="text",
-            model=canonical_model,
-            profile=profile_name,
-            status=job.status,
-            request_counts=job.request_counts,
-            provider_created_at=job.snapshot.created_at,
+    except (InterruptionRequested, TerminationRequested) as error:
+        interrupted = isinstance(error, InterruptionRequested)
+        action = "interrupted" if interrupted else "terminated"
+        return SubmissionResult(
+            direct_job,
+            ErrorEnvelope(
+                error=ErrorDetail(
+                    code=action,
+                    category=action,
+                    message=(
+                        f"Batchwork was {action} after the provider accepted the batch. "
+                        "The remote job was not cancelled; resume with the direct reference."
+                    ),
+                    exit_code=130 if interrupted else 143,
+                    retryable=False,
+                    operation="submit",
+                    provider=job.provider,
+                    job=provider_reference,
+                    routing_fingerprint=route.registry.fingerprint,
+                    profile=profile_name,
+                    registry_path=str(selected_registry_path),
+                    submission_outcome="accepted",
+                    partial_output=True,
+                    records_emitted=1,
+                    recovery=Recovery(
+                        action="resume_with_direct_reference",
+                        command=_direct_recovery_command(
+                            provider_reference, profile_name, route.registry
+                        ),
+                    ),
+                )
+            ),
         )
+    except (OSError, sqlite3.Error):
         error = ErrorEnvelope(
             error=ErrorDetail(
                 code="registry_write_failed_after_submit",
