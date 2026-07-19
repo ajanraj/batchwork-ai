@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"error","error":{"code":"provider_unavailable","category":"provider_availability","message":"Example error: provider_unavailable.","exit_code":5,"retryable":false,"operation":"status"}}

@@ -68,6 +68,7 @@ export const docsSidebar = [
         items: [
           "/docs/guides/jobs",
           "/docs/guides/results",
+          "/docs/guides/cli-exits",
           "/docs/guides/classification",
           "/docs/guides/server",
           "/docs/guides/stores",

@@ -83,7 +83,9 @@ def test_explicit_missing_config_fails(command: tuple[str, str]) -> None:
     )
 
     assert result.exit_code == 3
-    assert 'Configuration file "missing.toml" does not exist.' in result.stderr
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "config_not_found"
+    assert error["message"] == 'Configuration file "missing.toml" does not exist.'
 
 
 def test_machine_config_failure_uses_structured_configuration_error() -> None:
@@ -95,7 +97,7 @@ def test_machine_config_failure_uses_structured_configuration_error() -> None:
     assert result.exit_code == 3
     assert result.stdout == ""
     error = json.loads(result.stderr)["error"]
-    assert error["code"] == "invalid_configuration"
+    assert error["code"] == "config_not_found"
     assert error["category"] == "configuration"
     assert error["exit_code"] == 3
 
@@ -136,7 +138,7 @@ def test_config_validate_rejects_invalid_configuration(
     result = CliRunner().invoke(cli, ["--config", str(path), "config", "validate"])
 
     assert result.exit_code == 3
-    assert message in result.stderr
+    assert message in json.loads(result.stderr)["error"]["message"]
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions only")

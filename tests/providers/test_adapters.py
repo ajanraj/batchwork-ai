@@ -8,10 +8,17 @@ import httpx
 import pytest
 
 import batchwork.providers.openai_compatible as compatible_module
+from batchwork._network import AddressResolutionFailure, AddressResolutionFailureReason
+from batchwork._provider_failure import ProviderFailureError, ProviderFailureKind
 from batchwork.body import BuiltRequest
 from batchwork.errors import BatchworkError
 from batchwork.providers import get_adapter
-from batchwork.providers.shared import embedding_from_body, normalize_openai_result, request
+from batchwork.providers.shared import (
+    embedding_from_body,
+    normalize_openai_result,
+    request,
+    request_json,
+)
 from batchwork.types import BatchLimits, BatchProvider, ProviderCredentials
 
 _GOOGLE_INLINE_BATCH_MAX_BYTES = 20 * 1024 * 1024
@@ -151,6 +158,72 @@ async def test_http_error_does_not_include_provider_body() -> None:
 
     assert "secret prompt" not in str(caught.value)
     assert str(caught.value) == "batchwork: GET https://example.test/failure failed with 400"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "kind"),
+    [
+        (401, ProviderFailureKind.AUTHENTICATION),
+        (403, ProviderFailureKind.AUTHORIZATION),
+        (404, ProviderFailureKind.NOT_FOUND),
+        (400, ProviderFailureKind.REJECTED),
+        (429, ProviderFailureKind.UNAVAILABLE),
+        (503, ProviderFailureKind.UNAVAILABLE),
+    ],
+)
+async def test_http_error_exposes_only_safe_structured_metadata(
+    status: int, kind: ProviderFailureKind
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status,
+            headers={
+                "x-request-id": "req_123",
+                "retry-after": "7200",
+                "x-provider-secret": "must-not-be-retained",
+            },
+            text="secret body",
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderFailureError) as caught:
+            await request(client, "GET", "https://example.test/failure")
+
+    assert caught.value.failure.kind is kind
+    assert caught.value.failure.status_code == status
+    assert caught.value.failure.request_id == "req_123"
+    assert caught.value.failure.retry_after_seconds == 3600
+    assert not hasattr(caught.value.failure, "response")
+
+
+@pytest.mark.asyncio
+async def test_transport_error_is_structured_without_transport_details() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("secret headers and URL", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderFailureError) as caught:
+            await request(client, "GET", "https://secret.example.test/failure")
+
+    assert caught.value.failure.kind is ProviderFailureKind.TRANSPORT
+    assert caught.value.failure.status_code is None
+    assert str(caught.value) == "batchwork: provider request failed during transport."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", ["not json", "[]"])
+async def test_successful_invalid_json_is_structured_protocol_failure(body: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=body, headers={"request-id": "req_protocol"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderFailureError) as caught:
+            await request_json(client, "GET", "https://example.test/json")
+
+    assert caught.value.failure.kind is ProviderFailureKind.PROTOCOL
+    assert caught.value.failure.status_code == 200
+    assert caught.value.failure.request_id == "req_protocol"
 
 
 @pytest.mark.asyncio
@@ -402,6 +475,31 @@ async def test_together_rejects_invalid_dns_address(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reason", "message"),
+    [
+        (AddressResolutionFailureReason.LOOKUP, "could not be resolved"),
+        (AddressResolutionFailureReason.EMPTY, "resolved to no addresses"),
+    ],
+)
+async def test_together_dns_availability_failures_are_structured_transport_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    reason: AddressResolutionFailureReason,
+    message: str,
+) -> None:
+    async def resolve(_host: str, _port: int) -> AddressResolutionFailure:
+        return AddressResolutionFailure(reason, cause=OSError("secret resolver details"))
+
+    monkeypatch.setattr(compatible_module, "resolve_public_addresses", resolve)
+    with pytest.raises(ProviderFailureError, match=message) as caught:
+        await compatible_module._resolve_together_upload_addresses("storage.example", 443)
+
+    assert caught.value.failure.kind is ProviderFailureKind.TRANSPORT
+    assert caught.value.failure.status_code is None
+    assert "secret resolver details" not in str(caught.value)
+
+
+@pytest.mark.asyncio
 async def test_together_upload_tries_each_validated_address(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -445,7 +543,9 @@ async def test_together_init_failure_does_not_consume_provider_body() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         adapter = get_adapter(BatchProvider.TOGETHER, http_client=client)
-        with pytest.raises(BatchworkError, match=r"Together upload could not be initiated \(503\)"):
+        with pytest.raises(
+            ProviderFailureError, match=r"Together upload could not be initiated \(503\)"
+        ) as caught:
             await adapter.submit(
                 built=[
                     BuiltRequest(
@@ -458,6 +558,38 @@ async def test_together_init_failure_does_not_consume_provider_body() -> None:
                 endpoint="/v1/chat/completions",
                 model_id="model",
             )
+
+    assert caught.value.failure.kind is ProviderFailureKind.UNAVAILABLE
+    assert caught.value.failure.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_together_presigned_upload_failure_is_structured_without_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def resolve(host: str, port: int) -> tuple[str, ...]:
+        assert (host, port) == ("storage.example", 443)
+        return ("8.8.8.8",)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={"x-request-id": "req_together", "retry-after": "30"},
+            text="provider diagnostics",
+        )
+
+    monkeypatch.setattr(compatible_module, "_resolve_together_upload_addresses", resolve)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderFailureError) as caught:
+            await compatible_module._put_together_upload(
+                client, "https://storage.example/presigned-put", b"payload"
+            )
+
+    assert str(caught.value) == "batchwork: Together file upload failed (429)."
+    assert caught.value.failure.kind is ProviderFailureKind.UNAVAILABLE
+    assert caught.value.failure.status_code == 429
+    assert caught.value.failure.request_id == "req_together"
+    assert caught.value.failure.retry_after_seconds == 30
 
 
 @pytest.mark.asyncio

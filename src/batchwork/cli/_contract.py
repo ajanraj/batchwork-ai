@@ -8,14 +8,16 @@ import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Final, Literal, TypeAlias
 
 from pydantic import (
+    AfterValidator,
     AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
     TypeAdapter,
+    WithJsonSchema,
     field_validator,
     model_validator,
 )
@@ -52,6 +54,136 @@ ErrorCategory: TypeAlias = Literal[
     "terminated",
 ]
 ExitCode: TypeAlias = Literal[1, 2, 3, 4, 5, 6, 7, 8, 130, 143]
+KnownErrorCode: TypeAlias = Literal[
+    "internal_error",
+    "usage_error",
+    "invalid_job_selector",
+    "input_read_failed",
+    "input_parse_failed",
+    "input_validation_failed",
+    "duplicate_custom_id",
+    "unsupported_modality",
+    "unsupported_setting",
+    "provider_option_invalid",
+    "option_conflict",
+    "large_batch_not_allowed",
+    "hard_limit_exceeded",
+    "config_not_found",
+    "config_invalid",
+    "config_insecure",
+    "profile_not_found",
+    "missing_environment_variable",
+    "credentials_missing",
+    "authentication_failed",
+    "authorization_failed",
+    "endpoint_invalid",
+    "secret_header_literal",
+    "provider_rejected",
+    "provider_job_not_found",
+    "transport_failed",
+    "provider_unavailable",
+    "provider_protocol_error",
+    "result_stream_failed",
+    "cancellation_refresh_failed",
+    "results_not_ready",
+    "job_failed",
+    "job_expired",
+    "job_cancelled",
+    "completed_with_item_failures",
+    "terminal_partial_results",
+    "wait_timeout",
+    "registry_unavailable",
+    "registry_schema_unsupported",
+    "registry_integrity_failed",
+    "registry_write_failed_after_submit",
+    "local_job_not_found",
+    "output_directory_invalid",
+    "output_write_failed",
+    "interrupted",
+    "terminated",
+]
+
+# Stable machine-process semantics. Consumers may use this table to classify
+# every documented error code; exit codes are determined solely by category.
+EXIT_CODE_BY_CATEGORY: Final[dict[ErrorCategory, ExitCode]] = {
+    "internal": 1,
+    "usage": 2,
+    "configuration": 3,
+    "provider_rejection": 4,
+    "provider_availability": 5,
+    "job_state": 6,
+    "wait_timeout": 7,
+    "local_state": 8,
+    "interrupted": 130,
+    "terminated": 143,
+}
+ERROR_CODE_CATEGORIES: Final[dict[KnownErrorCode, ErrorCategory]] = {
+    "internal_error": "internal",
+    "usage_error": "usage",
+    "invalid_job_selector": "usage",
+    "input_read_failed": "usage",
+    "input_parse_failed": "usage",
+    "input_validation_failed": "usage",
+    "duplicate_custom_id": "usage",
+    "unsupported_modality": "usage",
+    "unsupported_setting": "usage",
+    "provider_option_invalid": "usage",
+    "option_conflict": "usage",
+    "large_batch_not_allowed": "usage",
+    "hard_limit_exceeded": "usage",
+    "config_not_found": "configuration",
+    "config_invalid": "configuration",
+    "config_insecure": "configuration",
+    "profile_not_found": "configuration",
+    "missing_environment_variable": "configuration",
+    "credentials_missing": "configuration",
+    "authentication_failed": "configuration",
+    "authorization_failed": "configuration",
+    "endpoint_invalid": "configuration",
+    "secret_header_literal": "configuration",
+    "provider_rejected": "provider_rejection",
+    "provider_job_not_found": "provider_rejection",
+    "transport_failed": "provider_availability",
+    "provider_unavailable": "provider_availability",
+    "provider_protocol_error": "provider_availability",
+    "result_stream_failed": "provider_availability",
+    "cancellation_refresh_failed": "provider_availability",
+    "results_not_ready": "job_state",
+    "job_failed": "job_state",
+    "job_expired": "job_state",
+    "job_cancelled": "job_state",
+    "completed_with_item_failures": "job_state",
+    "terminal_partial_results": "job_state",
+    "wait_timeout": "wait_timeout",
+    "registry_unavailable": "local_state",
+    "registry_schema_unsupported": "local_state",
+    "registry_integrity_failed": "local_state",
+    "registry_write_failed_after_submit": "local_state",
+    "local_job_not_found": "local_state",
+    "output_directory_invalid": "local_state",
+    "output_write_failed": "local_state",
+    "interrupted": "interrupted",
+    "terminated": "terminated",
+}
+CANONICAL_ERROR_CODES: Final[tuple[KnownErrorCode, ...]] = tuple(ERROR_CODE_CATEGORIES)
+
+
+def _validate_error_code(value: KnownErrorCode) -> KnownErrorCode:
+    if value not in ERROR_CODE_CATEGORIES:
+        raise ValueError(f"unknown error code {value!r}")
+    return value
+
+
+ErrorCode: TypeAlias = Annotated[
+    KnownErrorCode,
+    AfterValidator(_validate_error_code),
+    WithJsonSchema(
+        {
+            "enum": list(ERROR_CODE_CATEGORIES),
+            "type": "string",
+        }
+    ),
+]
 
 
 def _reject_non_finite(value: object, location: str = "machine output") -> None:
@@ -106,7 +238,7 @@ class Recovery(ContractModel):
 
 
 class ErrorDetail(ContractModel):
-    code: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    code: ErrorCode
     category: ErrorCategory
     message: str = Field(min_length=1)
     exit_code: ExitCode
@@ -130,6 +262,22 @@ class ErrorDetail(ContractModel):
     materialized_images: int | None = Field(default=None, ge=0)
     materialized_bytes: int | None = Field(default=None, ge=0)
     recovery: Recovery | None = None
+
+    @model_validator(mode="after")
+    def _stable_error_semantics(self) -> ErrorDetail:
+        expected_category = ERROR_CODE_CATEGORIES[self.code]
+        if self.category != expected_category:
+            raise ValueError(
+                f"error code {self.code!r} requires category {expected_category!r}, "
+                f"not {self.category!r}"
+            )
+        expected_exit_code = EXIT_CODE_BY_CATEGORY[self.category]
+        if self.exit_code != expected_exit_code:
+            raise ValueError(
+                f"error category {self.category!r} requires exit code {expected_exit_code}, "
+                f"not {self.exit_code}"
+            )
+        return self
 
 
 class PathState(ContractModel):
@@ -421,6 +569,8 @@ def _foundation_envelopes() -> dict[str, Envelope]:
             results=[result],
             materialization=materialization,
         ),
+        # Accepted-submission recovery sample retained for clients that use a
+        # single representative error fixture.
         "error.json": ErrorEnvelope(
             error=ErrorDetail(
                 code="registry_write_failed_after_submit",
@@ -428,7 +578,7 @@ def _foundation_envelopes() -> dict[str, Envelope]:
                 message=(
                     "The provider accepted the batch, but Batchwork could not record it locally."
                 ),
-                exit_code=8,
+                exit_code=EXIT_CODE_BY_CATEGORY["local_state"],
                 retryable=False,
                 operation="submit",
                 provider=BatchProvider.OPENAI,
@@ -496,10 +646,27 @@ def _foundation_envelopes() -> dict[str, Envelope]:
     }
 
 
-def fixture_documents() -> dict[str, str]:
+def _error_fixture_envelopes() -> dict[str, ErrorEnvelope]:
+    """Credential-free coverage fixture for every canonical error code."""
     return {
-        name: serialize_envelope(envelope) for name, envelope in _foundation_envelopes().items()
+        f"error-{code}.json": ErrorEnvelope(
+            error=ErrorDetail(
+                code=code,
+                category=ERROR_CODE_CATEGORIES[code],
+                message=f"Example error: {code}.",
+                exit_code=EXIT_CODE_BY_CATEGORY[ERROR_CODE_CATEGORIES[code]],
+                retryable=False,
+                operation="status",
+            )
+        )
+        for code in CANONICAL_ERROR_CODES
     }
+
+
+def fixture_documents() -> dict[str, str]:
+    envelopes = _foundation_envelopes()
+    envelopes.update(_error_fixture_envelopes())
+    return {name: serialize_envelope(envelope) for name, envelope in envelopes.items()}
 
 
 def contract_drift() -> list[Path]:

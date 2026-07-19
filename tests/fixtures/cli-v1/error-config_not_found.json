@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"error","error":{"code":"config_not_found","category":"configuration","message":"Example error: config_not_found.","exit_code":3,"retryable":false,"operation":"status"}}

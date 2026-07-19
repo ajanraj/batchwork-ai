@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"error","error":{"code":"wait_timeout","category":"wait_timeout","message":"Example error: wait_timeout.","exit_code":7,"retryable":false,"operation":"status"}}

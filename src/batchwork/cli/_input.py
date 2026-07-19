@@ -17,6 +17,9 @@ from pydantic import ValidationError
 
 from batchwork.types import BatchRequest
 
+from ._contract import KnownErrorCode
+from ._failures import CliUsageError
+
 _MAX_SOURCE_BYTES = 256 * 1024 * 1024
 _MAX_LINE_BYTES = 24 * 1024 * 1024
 
@@ -79,8 +82,8 @@ class _ParsedRequest:
     coordinate: str
 
 
-def _usage(message: str) -> click.UsageError:
-    return click.UsageError(message)
+def _usage(message: str, *, code: KnownErrorCode = "input_validation_failed") -> click.UsageError:
+    return CliUsageError(message, code=code)
 
 
 def _reject_json_constant(value: str) -> object:
@@ -103,54 +106,64 @@ def _input_format(source: Path, explicit: str | None) -> InputFormat:
         try:
             return InputFormat(explicit)
         except ValueError as error:
-            raise _usage(f'Unsupported input format: "{explicit}".') from error
+            raise _usage(f'Unsupported input format: "{explicit}".', code="usage_error") from error
     if source == Path("-"):
-        raise _usage("stdin requires --format; input content is never sniffed.")
+        raise _usage("stdin requires --format; input content is never sniffed.", code="usage_error")
     inferred = _EXTENSION_FORMATS.get(source.suffix.lower())
     if inferred is None:
-        raise _usage(f'SOURCE "{source}" has an unknown extension and requires --format.')
+        raise _usage(
+            f'SOURCE "{source}" has an unknown extension and requires --format.',
+            code="usage_error",
+        )
     return inferred
 
 
 def _read_source(source: Path, stdin: BinaryIO | None, input_format: InputFormat) -> str:
     if source == Path("-"):
         if stdin is None:
-            raise _usage("stdin is unavailable.")
+            raise _usage("stdin is unavailable.", code="input_read_failed")
         stream = stdin
         label = "stdin"
         close = False
     else:
         if not source.exists():
-            raise _usage(f'SOURCE does not exist: "{source}".')
+            raise _usage(f'SOURCE does not exist: "{source}".', code="input_read_failed")
         if not source.is_file():
-            raise _usage(f'SOURCE must be a regular file: "{source}".')
+            raise _usage(f'SOURCE must be a regular file: "{source}".', code="input_read_failed")
         try:
             stream = source.open("rb")
         except OSError as error:
-            raise _usage(f'Could not read SOURCE "{source}": {error}.') from error
+            raise _usage(
+                f'Could not read SOURCE "{source}": {error}.', code="input_read_failed"
+            ) from error
         label = f'SOURCE "{source}"'
         close = True
     try:
         encoded = stream.read(_MAX_SOURCE_BYTES + 1)
     except OSError as error:
-        raise _usage(f"Could not read {label}: {error}.") from error
+        raise _usage(f"Could not read {label}: {error}.", code="input_read_failed") from error
     finally:
         if close:
             stream.close()
     if len(encoded) > _MAX_SOURCE_BYTES:
-        raise _usage(f"{label} exceeds the {_MAX_SOURCE_BYTES} byte transport limit.")
+        raise _usage(
+            f"{label} exceeds the {_MAX_SOURCE_BYTES} byte transport limit.",
+            code="hard_limit_exceeded",
+        )
     if input_format is not InputFormat.JSON:
         normalized_lines = encoded.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
         for line_number, line in enumerate(normalized_lines.split(b"\n"), start=1):
             if len(line) > _MAX_LINE_BYTES:
                 raise _usage(
-                    f"{label} line {line_number} exceeds the {_MAX_LINE_BYTES} byte limit."
+                    f"{label} line {line_number} exceeds the {_MAX_LINE_BYTES} byte limit.",
+                    code="hard_limit_exceeded",
                 )
     try:
         return encoded.decode("utf-8-sig")
     except UnicodeDecodeError as error:
         raise _usage(
-            f"Could not read {label}: input must be UTF-8 with an optional BOM."
+            f"Could not read {label}: input must be UTF-8 with an optional BOM.",
+            code="input_read_failed",
         ) from error
 
 
@@ -187,9 +200,9 @@ def _decode_json(contents: str, error_prefix: str) -> object:
         document = json.loads(contents, parse_constant=_reject_json_constant)
         _reject_non_finite_numbers(document)
     except json.JSONDecodeError as error:
-        raise _usage(f"{error_prefix}: {error.msg}.") from error
+        raise _usage(f"{error_prefix}: {error.msg}.", code="input_parse_failed") from error
     except ValueError as error:
-        raise _usage(f"{error_prefix}: {error}.") from error
+        raise _usage(f"{error_prefix}: {error}.", code="input_parse_failed") from error
     return document
 
 
@@ -223,7 +236,7 @@ def _csv_requests(contents: str) -> list[_ParsedRequest]:
     except StopIteration as error:
         raise _usage("SOURCE must contain a CSV header row.") from error
     except csv.Error as error:
-        raise _usage(f"Invalid CSV header at row 1: {error}.") from error
+        raise _usage(f"Invalid CSV header at row 1: {error}.", code="input_parse_failed") from error
     seen: set[str] = set()
     for column, name in enumerate(header, start=1):
         if name in seen:
@@ -268,7 +281,9 @@ def _csv_requests(contents: str) -> list[_ParsedRequest]:
                 ) from error
             parsed.append(_ParsedRequest(request, f"CSV row {row_number}"))
     except csv.Error as error:
-        raise _usage(f"Invalid CSV record at row {reader.line_num}: {error}.") from error
+        raise _usage(
+            f"Invalid CSV record at row {reader.line_num}: {error}.", code="input_parse_failed"
+        ) from error
     if not parsed:
         raise _usage("SOURCE must contain at least one CSV request row.")
     return parsed
@@ -295,7 +310,9 @@ def _normalize_ids(parsed: Sequence[_ParsedRequest]) -> list[BatchRequest]:
         previous = seen.get(custom_id)
         if previous is not None:
             raise _usage(
-                f'Invalid custom_id "{custom_id}" at {item.coordinate}: already used at {previous}.'
+                f'Invalid custom_id "{custom_id}" at {item.coordinate}: '
+                f"already used at {previous}.",
+                code="duplicate_custom_id",
             )
         seen[custom_id] = item.coordinate
         normalized.append(item.request.model_copy(update={"custom_id": custom_id}))

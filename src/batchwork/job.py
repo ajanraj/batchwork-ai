@@ -155,8 +155,12 @@ class BatchJob:
 
     async def cancel(self) -> BatchSnapshot:
         self._ensure_open()
-        await self._adapter.cancel(self.id, self._credentials)
+        await self._request_cancel()
         return await self.poll()
+
+    async def _request_cancel(self) -> None:
+        self._ensure_open()
+        await self._adapter.cancel(self.id, self._credentials)
 
 
 __all__ = ["BatchJob", "PollCallback", "is_terminal_status"]

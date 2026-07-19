@@ -10,7 +10,7 @@ import sys
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TypeVar
+from typing import NoReturn, TypeVar
 
 import click
 
@@ -25,6 +25,7 @@ from ._contract import (
     ErrorEnvelope,
     JobEnvelope,
     JobListEnvelope,
+    KnownErrorCode,
     PathsEnvelope,
     PathState,
     RegistryChangeEnvelope,
@@ -35,12 +36,23 @@ from ._contract import (
     SnapshotEnvelope,
     serialize_envelope,
 )
+from ._failures import (
+    CliFailure,
+    CliUsageError,
+    FailureContext,
+    TerminationRequested,
+    configuration_failure,
+    internal_failure,
+    job_state_failure,
+    usage_failure,
+)
 from ._input import INPUT_FORMATS
 from ._lifecycle import (
     LifecycleFailure,
     LifecycleOptions,
     LifecycleResult,
     ResolvedJob,
+    _recovery_command,
     cancel_job,
     duration_seconds,
     render_lifecycle_error,
@@ -53,6 +65,8 @@ from ._lifecycle import (
 )
 from ._registry import (
     CURRENT_SCHEMA_VERSION,
+    RegistryIntegrityError,
+    RegistrySchemaError,
     check_registry,
     forget_job,
     is_job_name,
@@ -100,34 +114,93 @@ CLI_HELP_PATHS = (
 
 
 class ConfigAwareGroup(click.Group):
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        try:
+            return super().parse_args(ctx, args)
+        except click.UsageError as error:
+            mode = (
+                OutputMode.JSONL
+                if "--jsonl" in args
+                else OutputMode.JSON
+                if "--json" in args or not sys.stdout.isatty()
+                else OutputMode.HUMAN
+            )
+            _emit_failure(usage_failure(error, "cli"), mode)
+
     def invoke(self, ctx: click.Context) -> object:
         try:
             return super().invoke(ctx)
+        except click.exceptions.Exit:
+            raise
+        except CliFailure as failure:
+            _emit_failure(failure, _context_output_mode(ctx))
         except ConfigError as error:
-            root = ctx.obj
-            if isinstance(root, RootOptions) and root.output_mode in {
-                OutputMode.JSON,
-                OutputMode.JSONL,
-            }:
-                click.echo(
-                    serialize_envelope(
-                        ErrorEnvelope(
-                            error=ErrorDetail(
-                                code=error.code,
-                                category="configuration",
-                                message=error.message,
-                                exit_code=3,
-                                retryable=False,
-                                operation="configuration",
-                            )
-                        )
-                    ),
-                    nl=False,
-                    err=True,
+            root = ctx.obj if isinstance(ctx.obj, RootOptions) else None
+            failure = configuration_failure(
+                error,
+                FailureContext(
+                    operation=_context_operation(ctx),
+                    profile=root.profile if root is not None else None,
+                    config_path=str(root.config) if root is not None and root.config else None,
+                ),
+            )
+            _emit_failure(failure, _context_output_mode(ctx))
+        except click.UsageError as error:
+            _emit_failure(usage_failure(error, _context_operation(ctx)), _context_output_mode(ctx))
+        except (KeyboardInterrupt, click.Abort):
+            failure = CliFailure(
+                ErrorEnvelope(
+                    error=ErrorDetail(
+                        code="interrupted",
+                        category="interrupted",
+                        message="Batchwork was interrupted; no remote cancellation was requested.",
+                        exit_code=130,
+                        retryable=False,
+                        operation=_context_operation(ctx),
+                    )
                 )
-            else:
-                click.echo(f"Error: {error.message}", err=True)
-            raise click.exceptions.Exit(3) from error
+            )
+            _emit_failure(failure, _context_output_mode(ctx))
+        except TerminationRequested:
+            failure = CliFailure(
+                ErrorEnvelope(
+                    error=ErrorDetail(
+                        code="terminated",
+                        category="terminated",
+                        message="Batchwork was terminated; no remote cancellation was requested.",
+                        exit_code=143,
+                        retryable=False,
+                        operation=_context_operation(ctx),
+                    )
+                )
+            )
+            _emit_failure(failure, _context_output_mode(ctx))
+        except Exception as error:
+            _emit_failure(internal_failure(_context_operation(ctx)), _context_output_mode(ctx))
+            raise AssertionError("unreachable") from error
+
+
+def _context_operation(ctx: click.Context) -> str:
+    return ctx.invoked_subcommand or "cli"
+
+
+def _context_output_mode(ctx: click.Context) -> OutputMode:
+    root = ctx.obj
+    if isinstance(root, RootOptions):
+        return _output_mode(root)
+    return OutputMode.HUMAN if sys.stdout.isatty() else OutputMode.JSON
+
+
+def _emit_failure(failure: CliFailure, mode: OutputMode) -> NoReturn:
+    if mode in {OutputMode.JSON, OutputMode.JSONL}:
+        output = serialize_envelope(failure.envelope)
+    else:
+        detail = failure.envelope.error
+        command = detail.recovery.command if detail.recovery is not None else None
+        recovery = f"\nRecovery: {' '.join(command)}" if command else ""
+        output = f"Error: {detail.message}{recovery}\n"
+    click.echo(output, nl=False, err=True)
+    raise click.exceptions.Exit(failure.exit_code) from failure
 
 
 class PositiveFiniteFloat(click.ParamType):
@@ -196,8 +269,11 @@ def _lifecycle_options(
     provider: str | None,
     save: bool,
     name: str | None,
+    operation: str,
 ) -> LifecycleOptions:
-    return LifecycleOptions(job, base_url, api_key_env, header, header_env, provider, save, name)
+    return LifecycleOptions(
+        job, base_url, api_key_env, header, header_env, provider, save, name, operation
+    )
 
 
 def _fail_lifecycle(failure: LifecycleFailure, mode: OutputMode) -> None:
@@ -205,10 +281,31 @@ def _fail_lifecycle(failure: LifecycleFailure, mode: OutputMode) -> None:
     raise click.exceptions.Exit(failure.exit_code)
 
 
+def _fail_unsuccessful(result: LifecycleResult, operation: str, mode: OutputMode) -> None:
+    if not unsuccessful(result):
+        return
+    resolved = result.resolved
+    _emit_failure(
+        job_state_failure(
+            result.snapshot.status,
+            FailureContext(
+                operation=operation,
+                provider=resolved.provider,
+                job=resolved.machine_job,
+                routing_fingerprint=resolved.machine_fingerprint,
+            ),
+            item_successes=result.item_successes,
+            item_failures=result.item_failures,
+            recovery_command=_recovery_command("status", resolved),
+        ),
+        mode,
+    )
+
+
 def _fail_local_state(
     root: RootOptions,
     *,
-    code: str,
+    code: KnownErrorCode,
     message: str,
     operation: str,
     path: Path,
@@ -235,6 +332,14 @@ def _fail_local_state(
     else:
         click.echo(f"Error: {message}", err=True)
     raise click.exceptions.Exit(8)
+
+
+def _registry_error_code(error: BaseException) -> KnownErrorCode:
+    if isinstance(error, RegistrySchemaError):
+        return "registry_schema_unsupported"
+    if isinstance(error, RegistryIntegrityError):
+        return "registry_integrity_failed"
+    return "registry_unavailable"
 
 
 def _creation_options(function: CommandFunction) -> CommandFunction:
@@ -600,8 +705,7 @@ def run_text(
     elif mode is OutputMode.HUMAN:
         click.echo(render_snapshot(waited, mode), nl=False)
         click.echo(render_results(collected, mode), nl=False)
-    if unsuccessful(collected):
-        raise click.exceptions.Exit(6)
+    _fail_unsuccessful(collected, "run", mode)
 
 
 @run.command("embeddings")
@@ -643,7 +747,7 @@ def status(
     """Fetch one current snapshot for JOB."""
     mode = _output_mode(root)
     options = _lifecycle_options(
-        job, base_url, api_key_env, header, header_env, provider, save, name
+        job, base_url, api_key_env, header, header_env, provider, save, name, "status"
     )
     try:
         result = asyncio.run(status_job(root, options))
@@ -674,7 +778,7 @@ def wait(
     """Wait locally until JOB reaches a terminal state."""
     mode = _output_mode(root)
     options = _lifecycle_options(
-        job, base_url, api_key_env, header, header_env, provider, save, name
+        job, base_url, api_key_env, header, header_env, provider, save, name, "wait"
     )
     try:
         result = asyncio.run(
@@ -689,8 +793,7 @@ def wait(
         _fail_lifecycle(failure, mode)
         return
     click.echo(render_snapshot(result, mode), nl=False)
-    if unsuccessful(result):
-        raise click.exceptions.Exit(6)
+    _fail_unsuccessful(result, "wait", mode)
 
 
 @cli.command()
@@ -715,7 +818,7 @@ def results(
         raise click.UsageError("--output-dir is available for image jobs only.")
     mode = _output_mode(root, streaming=True)
     options = _lifecycle_options(
-        job, base_url, api_key_env, header, header_env, provider, save, name
+        job, base_url, api_key_env, header, header_env, provider, save, name, "results"
     )
 
     def emit_result(resolved: ResolvedJob, item: BatchResult) -> None:
@@ -745,8 +848,7 @@ def results(
         return
     if mode is not OutputMode.JSONL:
         click.echo(render_results(result, mode), nl=False)
-    if unsuccessful(result):
-        raise click.exceptions.Exit(6)
+    _fail_unsuccessful(result, "results", mode)
 
 
 @cli.command()
@@ -767,7 +869,7 @@ def cancel(
     """Request cancellation once, unless JOB is already terminal."""
     mode = _output_mode(root)
     options = _lifecycle_options(
-        job, base_url, api_key_env, header, header_env, provider, save, name
+        job, base_url, api_key_env, header, header_env, provider, save, name, "cancel"
     )
     try:
         result = asyncio.run(cancel_job(root, options))
@@ -811,7 +913,7 @@ def list_jobs(
     except (OSError, sqlite3.Error) as error:
         _fail_local_state(
             root,
-            code="registry_read_failed",
+            code=_registry_error_code(error),
             message=(
                 f"Could not read local registry: {error}. No records were changed; check "
                 "the registry path, permissions, and integrity, then retry."
@@ -845,14 +947,14 @@ def list_jobs(
 def forget(root: RootOptions, job: str) -> None:
     """Remove one local record without changing the remote job."""
     if ":" in job or (not is_record_id(job) and not is_job_name(job)):
-        raise click.UsageError("JOB must be a local alias or record ID.")
+        raise CliUsageError("JOB must be a local alias or record ID.", code="invalid_job_selector")
     selected_registry = registry_path(root.registry)
     try:
         record = forget_job(selected_registry, job)
     except (OSError, sqlite3.Error) as error:
         _fail_local_state(
             root,
-            code="registry_write_failed",
+            code=_registry_error_code(error),
             message=(
                 f"Could not forget the local record: {error}. The remote job was not changed; "
                 "check registry integrity, then retry."
@@ -903,7 +1005,7 @@ def prune(root: RootOptions, older_than: str, yes: bool) -> None:
     except (OSError, sqlite3.Error) as error:
         _fail_local_state(
             root,
-            code="registry_write_failed" if yes else "registry_read_failed",
+            code=_registry_error_code(error),
             message=(
                 f"Could not {'update' if yes else 'read'} the local prune set: {error}. "
                 "No remote jobs were changed; check registry integrity, then retry."
@@ -1023,6 +1125,25 @@ def registry_check(root: RootOptions) -> None:
     """Check registry schema and integrity."""
     selected_registry = registry_path(root.registry)
     report = check_registry(selected_registry)
+    if not report.ok:
+        code = (
+            "registry_schema_unsupported"
+            if report.integrity in {"unsupported_schema", "schema_missing"}
+            else "registry_unavailable"
+            if report.integrity.startswith("open_failed:")
+            else "registry_integrity_failed"
+        )
+        _fail_local_state(
+            root,
+            code=code,
+            message=(
+                "The local registry check failed. No records or remote jobs were changed; "
+                "preserve the registry and run batchwork registry reset --backup if needed."
+            ),
+            operation="registry",
+            path=selected_registry,
+        )
+        return
     envelope = RegistryCheckEnvelope(
         path=str(selected_registry),
         ok=report.ok,
@@ -1038,8 +1159,6 @@ def registry_check(root: RootOptions) -> None:
             f"Registry: {selected_registry}\nSchema: {report.user_version}\n"
             f"Integrity: {report.integrity} ({state})"
         )
-    if not report.ok:
-        raise click.exceptions.Exit(8)
 
 
 @registry.command("reset")
@@ -1053,12 +1172,12 @@ def registry_reset(root: RootOptions, **_: object) -> None:
     except (OSError, sqlite3.Error) as error:
         _fail_local_state(
             root,
-            code="registry_reset_failed",
+            code="registry_unavailable",
             message=(
                 f"Could not preserve and reset the local registry: {error}. "
                 "No remote jobs were changed; inspect the registry path and recovery files."
             ),
-            operation="registry_reset",
+            operation="registry",
             path=selected_registry,
         )
         return

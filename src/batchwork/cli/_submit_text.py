@@ -49,6 +49,7 @@ from ._contract import (
     Recovery,
     serialize_envelope,
 )
+from ._failures import FailureContext, provider_failure
 from ._input import load_text_requests
 from ._registry import RegistryRoute, insert_job
 from ._state import OutputMode, RootOptions
@@ -110,18 +111,18 @@ def _reject_json_constant(value: str) -> object:
 
 def _environment_value(name: str, purpose: str) -> str:
     if not ENVIRONMENT_NAME.fullmatch(name):
-        raise _usage(f'{purpose} environment variable name is invalid: "{name}".')
+        raise ConfigError(f'{purpose} environment variable name is invalid: "{name}".')
     value = os.environ.get(name)
     if not value:
-        raise _usage(f'{purpose} environment variable "{name}" is missing or empty.')
+        raise ConfigError(
+            f'{purpose} environment variable "{name}" is missing or empty.',
+            code="missing_environment_variable",
+        )
     return value
 
 
 def _normalized_base_url(value: str | None) -> str | None:
-    try:
-        return normalize_base_url(value, "--base-url")
-    except ConfigError as error:
-        raise _usage(error.message) from error
+    return normalize_base_url(value, "--base-url")
 
 
 def _key_value(values: Sequence[str], label: str) -> dict[str, str]:
@@ -171,7 +172,10 @@ def resolve_route_descriptor(
     forbidden = SENSITIVE_HEADERS.intersection(command_headers)
     if forbidden:
         name = sorted(forbidden)[0]
-        raise _usage(f'Header "{name}" may contain secrets; use --header-env.')
+        raise ConfigError(
+            f'Header "{name}" may contain secrets; use --header-env.',
+            code="secret_header_literal",
+        )
     for name, value in command_headers.items():
         header_variables.pop(name, None)
         literal_headers[name] = value
@@ -379,17 +383,32 @@ async def submit_text(
             "--allow-large-batch."
         )
 
-    async with Batchwork() as client:
-        job = await client.batch(
-            model=spec,
-            requests=requests,
-            defaults=defaults,
-            metadata=_metadata(options.batch_metadata),
-            limits=limits,
-            api_key=route.api_key,
-            base_url=route.base_url,
-            headers=route.headers,
+    try:
+        async with Batchwork() as client:
+            job = await client.batch(
+                model=spec,
+                requests=requests,
+                defaults=defaults,
+                metadata=_metadata(options.batch_metadata),
+                limits=limits,
+                api_key=route.api_key,
+                base_url=route.base_url,
+                headers=route.headers,
+            )
+    except Exception as error:
+        failure = provider_failure(
+            error,
+            FailureContext(
+                operation="submit",
+                provider=spec.provider,
+                routing_fingerprint=route.registry.fingerprint,
+                profile=profile_name,
+            ),
+            submission=True,
         )
+        if failure is None:
+            raise
+        raise failure from error
     registered_at = datetime.now(UTC)
     selected_registry_path = registry_path(root.registry)
     canonical_model = f"{spec.provider.value}/{spec.model_id}"
@@ -460,8 +479,6 @@ def _direct_recovery_command(
         command.extend(["--api-key-env", route.api_key_env])
         if route.base_url:
             command.extend(["--base-url", route.base_url])
-        for name, value in sorted(route.headers.items()):
-            command.extend(["--header", f"{name}={value}"])
         for name, variable in sorted(route.header_env.items()):
             command.extend(["--header-env", f"{name}={variable}"])
     return command

@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"error","error":{"code":"terminated","category":"terminated","message":"Example error: terminated.","exit_code":143,"retryable":false,"operation":"status"}}

@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"error","error":{"code":"registry_schema_unsupported","category":"local_state","message":"Example error: registry_schema_unsupported.","exit_code":8,"retryable":false,"operation":"status"}}

@@ -1,0 +1,40 @@
+---
+title: CLI machine errors
+description: Stable JSON error codes and process exit semantics for automation.
+---
+
+Use `--json` or `--jsonl` when a script needs a machine-readable error. Errors are written to stderr as a schema-v1 `error` envelope. The complete schema is available at [`/schemas/batchwork-cli-v1.schema.json`](/schemas/batchwork-cli-v1.schema.json).
+
+`error.code` is the stable remediation key. `error.category` and `error.exit_code` are fixed by that code. `error.message` is for people and may change. `recovery.action` is an extensible advisory string; clients must tolerate unknown values.
+
+## Exit codes
+
+| Exit code | Category | Meaning |
+| --- | --- | --- |
+| 1 | `internal` | Unexpected Batchwork failure. |
+| 2 | `usage` | Invalid CLI input or unsupported requested operation. |
+| 3 | `configuration` | Invalid, missing, or unusable local configuration or credentials. |
+| 4 | `provider_rejection` | Provider rejected a valid request or job reference. |
+| 5 | `provider_availability` | Transport or provider service failure. |
+| 6 | `job_state` | Job state cannot satisfy the requested operation. |
+| 7 | `wait_timeout` | Local wait elapsed; the remote job is unchanged. |
+| 8 | `local_state` | Registry or local output failure. |
+| 130 | `interrupted` | Interrupted by SIGINT. |
+| 143 | `terminated` | Terminated by SIGTERM. |
+
+## Error-code catalog
+
+| Category | Stable codes |
+| --- | --- |
+| `internal` | `internal_error` |
+| `usage` | `usage_error`, `invalid_job_selector`, `input_read_failed`, `input_parse_failed`, `input_validation_failed`, `duplicate_custom_id`, `unsupported_modality`, `unsupported_setting`, `provider_option_invalid`, `option_conflict`, `large_batch_not_allowed`, `hard_limit_exceeded` |
+| `configuration` | `config_not_found`, `config_invalid`, `config_insecure`, `profile_not_found`, `missing_environment_variable`, `credentials_missing`, `authentication_failed`, `authorization_failed`, `endpoint_invalid`, `secret_header_literal` |
+| `provider_rejection` | `provider_rejected`, `provider_job_not_found` |
+| `provider_availability` | `transport_failed`, `provider_unavailable`, `provider_protocol_error`, `result_stream_failed`, `cancellation_refresh_failed` |
+| `job_state` | `results_not_ready`, `job_failed`, `job_expired`, `job_cancelled`, `completed_with_item_failures`, `terminal_partial_results` |
+| `wait_timeout` | `wait_timeout` |
+| `local_state` | `registry_unavailable`, `registry_schema_unsupported`, `registry_integrity_failed`, `registry_write_failed_after_submit`, `local_job_not_found`, `output_directory_invalid`, `output_write_failed` |
+| `interrupted` | `interrupted` |
+| `terminated` | `terminated` |
+
+Every canonical code has a credential-free fixture at `tests/fixtures/cli-v1/error-<code>.json`. `error.json` remains the representative accepted-submission/local-recording failure sample.

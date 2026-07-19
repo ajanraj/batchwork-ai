@@ -13,6 +13,12 @@ from batchwork._network import (
     ResolvedAddresses,
     resolve_public_addresses,
 )
+from batchwork._provider_failure import (
+    ProviderFailureError,
+    http_failure,
+    protocol_failure,
+    transport_failure,
+)
 from batchwork.body import BuiltRequest
 from batchwork.errors import BatchworkError
 from batchwork.types import (
@@ -67,12 +73,12 @@ async def _resolve_together_upload_addresses(host: str, port: int) -> tuple[str,
     if isinstance(result, ResolvedAddresses):
         return result.addresses
     if result.reason is AddressResolutionFailureReason.LOOKUP:
-        raise BatchworkError(
-            f"batchwork: Together upload hostname {host!r} could not be resolved."
-        ) from result.cause
+        raise ProviderFailureError(
+            "batchwork: Together upload hostname could not be resolved.", transport_failure()
+        ) from None
     if result.reason is AddressResolutionFailureReason.EMPTY:
-        raise BatchworkError(
-            f"batchwork: Together upload hostname {host!r} resolved to no addresses."
+        raise ProviderFailureError(
+            "batchwork: Together upload hostname resolved to no addresses.", transport_failure()
         )
     if result.reason is AddressResolutionFailureReason.INVALID:
         raise BatchworkError(
@@ -89,7 +95,6 @@ async def _put_together_upload(client: httpx.AsyncClient, location: str, payload
     upload_url, host, port = _together_upload_location(location)
     addresses = await _resolve_together_upload_addresses(host, port)
     authority = upload_url.netloc.decode("ascii")
-    last_error: httpx.ConnectError | httpx.ConnectTimeout | None = None
     for address in addresses:
         request = httpx.Request(
             "PUT",
@@ -105,16 +110,25 @@ async def _put_together_upload(client: httpx.AsyncClient, location: str, payload
                 auth=None,
                 follow_redirects=False,
             )
-        except (httpx.ConnectError, httpx.ConnectTimeout) as error:
-            last_error = error
+            try:
+                if not 200 <= response.status_code < 300:
+                    raise ProviderFailureError(
+                        f"batchwork: Together file upload failed ({response.status_code}).",
+                        http_failure(response),
+                    )
+                return response.status_code
+            finally:
+                await response.aclose()
+        except (httpx.ConnectError, httpx.ConnectTimeout):
             continue
-        try:
-            return response.status_code
-        finally:
-            await response.aclose()
-    raise BatchworkError(
-        "batchwork: Together file upload could not connect to any resolved address."
-    ) from last_error
+        except httpx.HTTPError:
+            raise ProviderFailureError(
+                "batchwork: Together file upload failed during transport.", transport_failure()
+            ) from None
+    raise ProviderFailureError(
+        "batchwork: Together file upload could not connect to any resolved address.",
+        transport_failure(),
+    )
 
 
 async def _upload_together_file_with_client(
@@ -129,22 +143,32 @@ async def _upload_together_file_with_client(
         "file_name": (None, _TOGETHER_INPUT_FILE_NAME),
         "file_type": (None, "jsonl"),
     }
-    async with client.stream(
-        "POST",
-        f"{base}/files",
-        headers=headers,
-        files=metadata,
-        follow_redirects=False,
-    ) as initiated:
-        status = initiated.status_code
-        location = initiated.headers.get("location")
-        file_id = initiated.headers.get("x-together-file-id")
-    if status != httpx.codes.FOUND or not location or not file_id:
-        raise BatchworkError(f"batchwork: Together upload could not be initiated ({status}).")
+    try:
+        async with client.stream(
+            "POST",
+            f"{base}/files",
+            headers=headers,
+            files=metadata,
+            follow_redirects=False,
+        ) as initiated:
+            status = initiated.status_code
+            location = initiated.headers.get("location")
+            file_id = initiated.headers.get("x-together-file-id")
+            if status != httpx.codes.FOUND or not location or not file_id:
+                failure = (
+                    http_failure(initiated)
+                    if status != httpx.codes.FOUND
+                    else protocol_failure(initiated)
+                )
+                raise ProviderFailureError(
+                    f"batchwork: Together upload could not be initiated ({status}).", failure
+                )
+    except httpx.HTTPError:
+        raise ProviderFailureError(
+            "batchwork: Together upload initiation failed during transport.", transport_failure()
+        ) from None
 
-    upload_status = await _put_together_upload(client, location, payload)
-    if not 200 <= upload_status < 300:
-        raise BatchworkError(f"batchwork: Together file upload failed ({upload_status}).")
+    await _put_together_upload(client, location, payload)
 
     safe_file_id = simple_provider_id("Together file id", file_id)
     await request_json(

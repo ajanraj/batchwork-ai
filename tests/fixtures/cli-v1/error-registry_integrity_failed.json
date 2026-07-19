@@ -1,0 +1,1 @@
+{"schema_version":1,"type":"error","error":{"code":"registry_integrity_failed","category":"local_state","message":"Example error: registry_integrity_failed.","exit_code":8,"retryable":false,"operation":"status"}}
