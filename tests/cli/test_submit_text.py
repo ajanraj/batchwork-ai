@@ -13,7 +13,9 @@ from typing import ClassVar
 import pytest
 from click.testing import CliRunner
 
+import batchwork.cli._submit_text as submit_module
 from batchwork.cli._commands import cli
+from batchwork.cli._failures import InterruptionRequested, TerminationRequested
 
 
 class _FakeOpenAIHandler(BaseHTTPRequestHandler):
@@ -66,6 +68,59 @@ def _installed_batchwork() -> Path:
     )
     assert executable.is_file(), "batchwork console script is not installed"
     return executable
+
+
+@pytest.mark.parametrize(
+    ("signal_error", "exit_code", "error_code"),
+    (
+        (InterruptionRequested, 130, "interrupted"),
+        (TerminationRequested, 143, "terminated"),
+    ),
+)
+def test_signal_after_acceptance_emits_direct_identity_and_recovery(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+    monkeypatch: pytest.MonkeyPatch,
+    signal_error: type[Exception],
+    exit_code: int,
+    error_code: str,
+) -> None:
+    base_url, _ = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"private"}\n')
+
+    def interrupt_insert(*_: object, **__: object) -> object:
+        raise signal_error
+
+    monkeypatch.setattr(submit_module, "insert_job", interrupt_insert)
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_OPENAI_KEY",
+        ],
+        env={"TEST_OPENAI_KEY": "secret"},
+    )
+
+    assert result.exit_code == exit_code
+    assert json.loads(result.stdout)["job"]["provider_reference"] == "openai:batch_123"
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == error_code
+    assert error["submission_outcome"] == "accepted"
+    assert error["records_emitted"] == 1
+    assert error["recovery"]["command"][:3] == [
+        "batchwork",
+        "status",
+        "openai:batch_123",
+    ]
 
 
 def test_installed_submit_text_emits_job_and_persists_metadata_only(

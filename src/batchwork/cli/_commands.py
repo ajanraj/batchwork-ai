@@ -154,10 +154,31 @@ class ConfigAwareGroup(click.Group):
             _emit_failure(usage_failure(error, _context_operation(ctx)), _context_output_mode(ctx))
         except BrokenPipeError:
             raise QuietBrokenPipe from None
-        except (InterruptionRequested, KeyboardInterrupt, click.Abort):
+        except InterruptionRequested:
             from ._lifecycle import active_signal_failure
+            from ._submit_text import active_submission_signal_failure
 
-            failure = active_signal_failure(interrupted=True) or CliFailure(
+            failure = (
+                active_submission_signal_failure(interrupted=True)
+                or active_signal_failure(interrupted=True)
+                or CliFailure(
+                    ErrorEnvelope(
+                        error=ErrorDetail(
+                            code="interrupted",
+                            category="interrupted",
+                            message=(
+                                "Batchwork was interrupted; no remote cancellation was requested."
+                            ),
+                            exit_code=130,
+                            retryable=False,
+                            operation=_context_operation(ctx),
+                        )
+                    )
+                )
+            )
+            _emit_failure(failure, _context_output_mode(ctx))
+        except (KeyboardInterrupt, click.Abort):
+            failure = CliFailure(
                 ErrorEnvelope(
                     error=ErrorDetail(
                         code="interrupted",
@@ -172,20 +193,32 @@ class ConfigAwareGroup(click.Group):
             _emit_failure(failure, _context_output_mode(ctx))
         except TerminationRequested:
             from ._lifecycle import active_signal_failure
+            from ._submit_text import active_submission_signal_failure
 
-            failure = active_signal_failure(interrupted=False) or CliFailure(
-                ErrorEnvelope(
-                    error=ErrorDetail(
-                        code="terminated",
-                        category="terminated",
-                        message="Batchwork was terminated; no remote cancellation was requested.",
-                        exit_code=143,
-                        retryable=False,
-                        operation=_context_operation(ctx),
+            failure = (
+                active_submission_signal_failure(interrupted=False)
+                or active_signal_failure(interrupted=False)
+                or CliFailure(
+                    ErrorEnvelope(
+                        error=ErrorDetail(
+                            code="terminated",
+                            category="terminated",
+                            message=(
+                                "Batchwork was terminated; no remote cancellation was requested."
+                            ),
+                            exit_code=143,
+                            retryable=False,
+                            operation=_context_operation(ctx),
+                        )
                     )
                 )
             )
             _emit_failure(failure, _context_output_mode(ctx))
+        except OSError:
+            _emit_failure(
+                output_failure(FailureContext(operation=_context_operation(ctx))),
+                _context_output_mode(ctx),
+            )
         except Exception as error:
             _emit_failure(internal_failure(_context_operation(ctx)), _context_output_mode(ctx))
             raise AssertionError("unreachable") from error
@@ -596,7 +629,7 @@ def submit_text(
     click.echo(render_job(result.job, mode), nl=False)
     if result.error is not None:
         click.echo(render_error(result.error, mode), nl=False, err=True)
-        raise click.exceptions.Exit(8)
+        raise click.exceptions.Exit(result.error.error.exit_code)
 
 
 @submit.command("embeddings")
@@ -695,7 +728,7 @@ def run_text(
             records_emitted += 1
         if submission.error is not None:
             click.echo(render_error(submission.error, mode), nl=False, err=True)
-            raise click.exceptions.Exit(8)
+            raise click.exceptions.Exit(submission.error.error.exit_code)
         selector = submission.job.record_id or submission.job.provider_reference
         lifecycle = LifecycleOptions(selector, None, None, (), (), None, False, None)
         waited = await wait_job(
