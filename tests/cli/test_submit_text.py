@@ -159,6 +159,143 @@ def test_installed_submit_text_emits_job_and_persists_metadata_only(
     assert b"top-secret" not in database
 
 
+def test_submit_text_resolves_default_profile_model_and_route(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"hello"}\n')
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f"""\
+schema_version = 1
+default_profile = "work"
+
+[profiles.work.models]
+text = "openai/gpt-profile"
+
+[profiles.work.providers.openai]
+api_key_env = "PROFILE_KEY"
+base_url = "{base_url}"
+
+[profiles.work.providers.openai.headers]
+X-Origin = "profile"
+
+[profiles.work.providers.openai.header_env]
+X-Secret = "PROFILE_HEADER"
+"""
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "--config",
+            str(config),
+            "--registry",
+            str(tmp_path / "registry.sqlite3"),
+            "submit",
+            "text",
+            str(source),
+        ],
+        env={"PROFILE_KEY": "key-secret", "PROFILE_HEADER": "header-secret"},
+    )
+
+    assert result.exit_code == 0, result.stderr
+    job = json.loads(result.stdout)["job"]
+    assert job["model"] == "openai/gpt-profile"
+    assert job["profile"] == "work"
+    upload_headers = provider_requests[0][1]
+    assert upload_headers["Authorization"] == "Bearer key-secret"
+    assert upload_headers["x-origin"] == "profile"
+    assert upload_headers["x-secret"] == "header-secret"
+    assert b'"model":"gpt-profile"' in provider_requests[0][2]
+
+
+def test_submit_text_flags_override_profile_route_fields(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"hello"}\n')
+    config = tmp_path / "config.toml"
+    config.write_text(
+        """\
+schema_version = 1
+default_profile = "work"
+[profiles.work.models]
+text = "openai/profile-model"
+[profiles.work.providers.openai]
+api_key_env = "PROFILE_KEY"
+base_url = "https://unused.example/v1"
+[profiles.work.providers.openai.headers]
+X-Origin = "profile"
+[profiles.work.providers.openai.header_env]
+X-Secret = "PROFILE_HEADER"
+"""
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(config),
+            "--registry",
+            str(tmp_path / "registry.sqlite3"),
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/flag-model",
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "FLAG_KEY",
+            "--header",
+            "X-Origin=flag",
+            "--header-env",
+            "X-Secret=FLAG_HEADER",
+        ],
+        env={"FLAG_KEY": "flag-key", "FLAG_HEADER": "flag-header"},
+    )
+
+    assert result.exit_code == 0, result.stderr
+    headers = provider_requests[0][1]
+    assert headers["Authorization"] == "Bearer flag-key"
+    assert headers["x-origin"] == "flag"
+    assert headers["x-secret"] == "flag-header"
+    assert b'"model":"flag-model"' in provider_requests[0][2]
+
+
+def test_invalid_explicit_config_fails_before_source_or_provider_work(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+) -> None:
+    _, provider_requests = fake_openai
+    config = tmp_path / "config.toml"
+    config.write_text("schema_version = 2\n")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--config",
+            str(config),
+            "submit",
+            "text",
+            str(tmp_path / "missing.jsonl"),
+            "--model",
+            "openai/gpt-test",
+        ],
+    )
+
+    assert result.exit_code == 3
+    assert "schema version 1" in result.stderr
+    assert "missing.jsonl" not in result.stderr
+    assert provider_requests == []
+
+
 @pytest.mark.parametrize(
     ("filename", "contents", "input_format"),
     (
