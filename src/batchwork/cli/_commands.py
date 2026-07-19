@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypeVar
@@ -13,6 +15,8 @@ import click
 from batchwork.types import BatchProvider
 
 from ._state import OutputMode, RootOptions
+from ._submit_text import SubmitTextOptions, render_error, render_job
+from ._submit_text import submit_text as execute_submit_text
 
 CommandFunction = TypeVar("CommandFunction", bound=Callable[..., object])
 
@@ -252,9 +256,69 @@ def submit() -> None:
 @click.argument("source", type=click.Path(path_type=Path, dir_okay=False, allow_dash=True))
 @_creation_options
 @_text_options
-def submit_text(**_: object) -> None:
+@click.pass_obj
+def submit_text(
+    root: RootOptions,
+    source: Path,
+    model: str | None,
+    input_format: str | None,
+    name: str | None,
+    batch_metadata: tuple[str, ...],
+    provider_options: str | None,
+    provider_options_file: Path | None,
+    allow_large_batch: bool,
+    base_url: str | None,
+    api_key_env: str | None,
+    header: tuple[str, ...],
+    header_env: tuple[str, ...],
+    system: str | None,
+    max_output_tokens: int | None,
+    temperature: float | None,
+    top_p: float | None,
+    top_k: int | None,
+    seed: int | None,
+    frequency_penalty: float | None,
+    presence_penalty: float | None,
+    stop: tuple[str, ...],
+    tool_choice: str | None,
+    endpoint: str | None,
+) -> None:
     """Submit canonical text requests from SOURCE."""
-    _foundation_only()
+    result = asyncio.run(
+        execute_submit_text(
+            root,
+            SubmitTextOptions(
+                source=source,
+                model=model,
+                input_format=input_format,
+                name=name,
+                batch_metadata=batch_metadata,
+                provider_options=provider_options,
+                provider_options_file=provider_options_file,
+                allow_large_batch=allow_large_batch,
+                base_url=base_url,
+                api_key_env=api_key_env,
+                header=header,
+                header_env=header_env,
+                system=system,
+                max_output_tokens=max_output_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                seed=seed,
+                frequency_penalty=frequency_penalty,
+                presence_penalty=presence_penalty,
+                stop=stop,
+                tool_choice=tool_choice,
+                endpoint=endpoint,
+            ),
+        )
+    )
+    mode = root.output_mode or (OutputMode.HUMAN if sys.stdout.isatty() else OutputMode.JSON)
+    click.echo(render_job(result.job, mode), nl=False)
+    if result.error is not None:
+        click.echo(render_error(result.error, mode), nl=False, err=True)
+        raise click.exceptions.Exit(8)
 
 
 @submit.command("embeddings")
