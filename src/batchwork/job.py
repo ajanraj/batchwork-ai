@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from .errors import BatchTimeoutError
 from .types import (
@@ -23,6 +23,13 @@ class _Adapter(Protocol):
     async def retrieve(self, id: str, credentials: ProviderCredentials) -> BatchSnapshot: ...
     def results(self, id: str, credentials: ProviderCredentials) -> AsyncIterator[BatchResult]: ...
     async def cancel(self, id: str, credentials: ProviderCredentials) -> None: ...
+
+
+@runtime_checkable
+class _SnapshotResultsAdapter(Protocol):
+    def results_from_snapshot(
+        self, snapshot: BatchSnapshot, credentials: ProviderCredentials
+    ) -> AsyncIterator[BatchResult]: ...
 
 
 PollCallback = Callable[[BatchSnapshot], object | Awaitable[object]]
@@ -127,14 +134,18 @@ class BatchJob:
             sleep_for = poll_interval if remaining is None else min(poll_interval, remaining)
             await asyncio.sleep(sleep_for)
 
-    async def results(self) -> AsyncIterator[BatchResult]:
-        self._ensure_open()
-        async for result in self._adapter.results(self.id, self._credentials):
+    async def results(self, *, refresh: bool = True) -> AsyncIterator[BatchResult]:
+        snapshot = await self.poll() if refresh else self.snapshot
+        if isinstance(self._adapter, _SnapshotResultsAdapter):
+            results = self._adapter.results_from_snapshot(snapshot, self._credentials)
+        else:
+            results = self._adapter.results(self.id, self._credentials)
+        async for result in results:
             self._ensure_open()
             yield result
 
-    async def collect(self) -> list[BatchResult]:
-        return [result async for result in self.results()]
+    async def collect(self, *, refresh: bool = True) -> list[BatchResult]:
+        return [result async for result in self.results(refresh=refresh)]
 
     async def cancel(self) -> BatchSnapshot:
         self._ensure_open()

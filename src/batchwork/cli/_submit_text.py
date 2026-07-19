@@ -290,6 +290,14 @@ def _resolve_route(
     return ResolvedRoute(api_key, normalized_base_url, resolved_headers, registry_route)
 
 
+def resolve_registered_route(provider: BatchProvider, route: RegistryRoute) -> ResolvedRoute:
+    api_key = _environment_value(route.api_key_env, "API key")
+    resolved_headers = dict(route.headers)
+    for name, variable in route.header_env.items():
+        resolved_headers[name] = _environment_value(variable, f'Header "{name}"')
+    return ResolvedRoute(api_key, route.base_url, resolved_headers, route)
+
+
 def _parse_json_object(document: str, label: str) -> dict[str, JsonValue]:
     if len(document.encode()) > _MAX_PROVIDER_OPTIONS_BYTES:
         raise _usage(f"{label} exceeds the {_MAX_PROVIDER_OPTIONS_BYTES} byte limit.")
@@ -513,7 +521,7 @@ def _direct_recovery_command(
     command = ["batchwork"]
     if root.profile:
         command.extend(["--profile", root.profile])
-    command.extend(["status", provider_reference, "--provider", provider.value])
+    command.extend(["status", provider_reference])
     if not root.profile:
         command.extend(["--api-key-env", route.api_key_env])
         if route.base_url:

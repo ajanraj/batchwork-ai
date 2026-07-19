@@ -147,10 +147,17 @@ class AnthropicAdapter:
         self, id: str, credentials: ProviderCredentials
     ) -> AsyncIterator[BatchResult]:
         snapshot = await self.retrieve(id, credentials)
+        async for result in self.results_from_snapshot(snapshot, credentials):
+            yield result
+
+    async def results_from_snapshot(
+        self, snapshot: BatchSnapshot, credentials: ProviderCredentials
+    ) -> AsyncIterator[BatchResult]:
         raw_url = snapshot.raw.get("results_url") if is_string_mapping(snapshot.raw) else None
         if not isinstance(raw_url, str):
             raise BatchworkError(
-                f'batchwork: results are not ready for batch "{id}" (status: {snapshot.status}).'
+                f'batchwork: results are not ready for batch "{snapshot.id}" '
+                f"(status: {snapshot.status})."
             )
         target = urlsplit(raw_url)
         expected = urlsplit(self._base(credentials))

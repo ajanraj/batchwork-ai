@@ -327,8 +327,6 @@ def test_accepted_job_is_emitted_with_recovery_when_registry_write_fails(
         "batchwork",
         "status",
         "openai:batch_123",
-        "--provider",
-        "openai",
         "--api-key-env",
         "TEST_OPENAI_KEY",
         "--base-url",
