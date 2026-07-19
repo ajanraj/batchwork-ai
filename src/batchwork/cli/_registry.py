@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from batchwork.types import (
 from ._contract import Job
 
 _RECORD_ID = re.compile(r"^bw_[0-9a-f]{32}$")
+_JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -68,6 +70,14 @@ class RegistryJob:
     route: RegistryRoute
 
 
+def is_record_id(value: str) -> bool:
+    return _RECORD_ID.fullmatch(value) is not None
+
+
+def is_job_name(value: str) -> bool:
+    return _JOB_NAME.fullmatch(value) is not None and not is_record_id(value)
+
+
 def insert_job(
     path: Path,
     *,
@@ -78,6 +88,8 @@ def insert_job(
     snapshot: BatchSnapshot,
     registered_at: datetime,
 ) -> Job:
+    if name is not None and not is_job_name(name):
+        raise ValueError("name must be shell-safe and cannot match a record ID")
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     record_id = f"bw_{uuid4().hex}"
     provider_reference = f"{snapshot.provider.value}:{snapshot.id}"
@@ -85,8 +97,8 @@ def insert_job(
     with sqlite3.connect(path, timeout=5) as connection:
         if os.name == "posix":
             path.chmod(0o600)
-        connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA journal_mode = WAL")
         connection.execute(SCHEMA)
         connection.execute("PRAGMA user_version = 1")
         connection.execute(
@@ -95,8 +107,9 @@ def insert_job(
                 record_id, name, provider, provider_job_id, provider_reference,
                 routing_fingerprint, api_key_env, base_url, headers_json, header_env_json,
                 modality, model, profile, status, request_total, request_completed,
-                request_failed, registered_at, provider_created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                request_failed, registered_at, provider_created_at, completed_at, expires_at,
+                terminal_at, last_refreshed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
@@ -122,6 +135,10 @@ def insert_job(
                 counts.failed,
                 registered_at.isoformat(),
                 snapshot.created_at.isoformat() if snapshot.created_at else None,
+                snapshot.completed_at.isoformat() if snapshot.completed_at else None,
+                snapshot.expires_at.isoformat() if snapshot.expires_at else None,
+                registered_at.isoformat() if is_terminal_status(snapshot.status) else None,
+                registered_at.isoformat(),
             ),
         )
     return Job(
@@ -138,6 +155,9 @@ def insert_job(
         request_counts=counts,
         registered_at=registered_at,
         provider_created_at=snapshot.created_at,
+        completed_at=snapshot.completed_at,
+        expires_at=snapshot.expires_at,
+        terminal_at=registered_at if is_terminal_status(snapshot.status) else None,
     )
 
 
@@ -150,15 +170,19 @@ def adopt_job(
     snapshot: BatchSnapshot,
     registered_at: datetime,
 ) -> RegistryJob:
+    if name is not None and not is_job_name(name):
+        raise ValueError("name must be shell-safe and cannot match a record ID")
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with sqlite3.connect(path, timeout=5) as connection:
         if os.name == "posix":
             path.chmod(0o600)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA journal_mode = WAL")
         connection.execute(SCHEMA)
         _ensure_columns(connection)
+        connection.execute("PRAGMA user_version = 1")
+        connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             """
             SELECT * FROM jobs
@@ -173,9 +197,38 @@ def adopt_job(
                 connection.execute(
                     "UPDATE jobs SET name = ? WHERE record_id = ?", (name, row["record_id"])
                 )
-                row = connection.execute(
-                    "SELECT * FROM jobs WHERE record_id = ?", (row["record_id"],)
-                ).fetchone()
+            counts = snapshot.request_counts
+            connection.execute(
+                """
+                UPDATE jobs SET profile = COALESCE(?, profile), status = ?,
+                    request_total = ?, request_completed = ?, request_failed = ?,
+                    provider_created_at = COALESCE(provider_created_at, ?),
+                    completed_at = ?, expires_at = ?,
+                    terminal_at = COALESCE(terminal_at, ?), last_refreshed_at = ?
+                WHERE record_id = ?
+                    AND (
+                        status NOT IN ('completed', 'failed', 'expired', 'cancelled')
+                        OR status = ?
+                    )
+                """,
+                (
+                    profile,
+                    snapshot.status.value,
+                    counts.total,
+                    counts.completed,
+                    counts.failed,
+                    snapshot.created_at.isoformat() if snapshot.created_at else None,
+                    snapshot.completed_at.isoformat() if snapshot.completed_at else None,
+                    snapshot.expires_at.isoformat() if snapshot.expires_at else None,
+                    registered_at.isoformat() if is_terminal_status(snapshot.status) else None,
+                    registered_at.isoformat(),
+                    row["record_id"],
+                    snapshot.status.value,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE record_id = ?", (row["record_id"],)
+            ).fetchone()
             if row is None:
                 raise sqlite3.IntegrityError("adopted job disappeared")
             return _registry_job(row)
@@ -285,20 +338,16 @@ def update_job(path: Path, record_id: str, snapshot: BatchSnapshot, refreshed_at
     counts = snapshot.request_counts
     with sqlite3.connect(path, timeout=5) as connection:
         _ensure_columns(connection)
-        current = connection.execute(
-            "SELECT status FROM jobs WHERE record_id = ?", (record_id,)
-        ).fetchone()
-        if current is None:
-            return
-        current_terminal = is_terminal_status(BatchStatus(current[0]))
-        if current_terminal and not terminal:
-            return
         connection.execute(
             """
             UPDATE jobs SET status = ?, request_total = ?, request_completed = ?,
                 request_failed = ?, completed_at = ?, expires_at = ?,
                 terminal_at = COALESCE(terminal_at, ?), last_refreshed_at = ?
             WHERE record_id = ?
+                AND (
+                    status NOT IN ('completed', 'failed', 'expired', 'cancelled')
+                    OR status = ?
+                )
             """,
             (
                 snapshot.status.value,
@@ -310,6 +359,7 @@ def update_job(path: Path, record_id: str, snapshot: BatchSnapshot, refreshed_at
                 refreshed_at.isoformat() if terminal else None,
                 refreshed_at.isoformat(),
                 record_id,
+                snapshot.status.value,
             ),
         )
 
@@ -317,3 +367,84 @@ def update_job(path: Path, record_id: str, snapshot: BatchSnapshot, refreshed_at
 def update_job_profile(path: Path, record_id: str, profile: str) -> None:
     with sqlite3.connect(path, timeout=5) as connection:
         connection.execute("UPDATE jobs SET profile = ? WHERE record_id = ?", (profile, record_id))
+
+
+def list_registry_jobs(
+    path: Path,
+    *,
+    provider: BatchProvider | None = None,
+    modality: str | None = None,
+    statuses: Sequence[BatchStatus] = (),
+    name: str | None = None,
+    limit: int | None = None,
+) -> list[RegistryJob]:
+    if not path.is_file():
+        return []
+    clauses: list[str] = []
+    parameters: list[str | int] = []
+    if provider is not None:
+        clauses.append("provider = ?")
+        parameters.append(provider.value)
+    if modality is not None:
+        clauses.append("modality = ?")
+        parameters.append(modality)
+    if statuses:
+        placeholders = ", ".join("?" for _ in statuses)
+        clauses.append(f"status IN ({placeholders})")
+        parameters.extend(status.value for status in statuses)
+    if name is not None:
+        clauses.append("name = ?")
+        parameters.append(name)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    limit_clause = " LIMIT ?" if limit is not None else ""
+    if limit is not None:
+        parameters.append(limit)
+    with sqlite3.connect(path, timeout=5) as connection:
+        connection.row_factory = sqlite3.Row
+        _ensure_columns(connection)
+        rows = connection.execute(
+            f"SELECT * FROM jobs{where} ORDER BY registered_at DESC, record_id ASC{limit_clause}",
+            parameters,
+        ).fetchall()
+    return [_registry_job(row) for row in rows]
+
+
+def forget_job(path: Path, selector: str) -> RegistryJob | None:
+    if not path.is_file():
+        return None
+    with sqlite3.connect(path, timeout=5) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 5000")
+        _ensure_columns(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        column = "record_id" if is_record_id(selector) else "name"
+        row = connection.execute(f"SELECT * FROM jobs WHERE {column} = ?", (selector,)).fetchone()
+        if row is None:
+            return None
+        connection.execute("DELETE FROM jobs WHERE record_id = ?", (row["record_id"],))
+    return _registry_job(row)
+
+
+def prune_jobs(path: Path, cutoff_at: datetime, *, commit: bool) -> int:
+    if not path.is_file():
+        return 0
+    terminal_statuses = (
+        BatchStatus.COMPLETED.value,
+        BatchStatus.FAILED.value,
+        BatchStatus.EXPIRED.value,
+        BatchStatus.CANCELLED.value,
+    )
+    placeholders = ", ".join("?" for _ in terminal_statuses)
+    predicate = f"status IN ({placeholders}) AND terminal_at < ?"
+    parameters = (*terminal_statuses, cutoff_at.isoformat())
+    with sqlite3.connect(path, timeout=5) as connection:
+        connection.execute("PRAGMA busy_timeout = 5000")
+        _ensure_columns(connection)
+        if not commit:
+            row = connection.execute(
+                f"SELECT COUNT(*) FROM jobs WHERE {predicate}", parameters
+            ).fetchone()
+            return int(row[0]) if row is not None else 0
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute(f"DELETE FROM jobs WHERE {predicate}", parameters)
+        return cursor.rowcount
