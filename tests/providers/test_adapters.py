@@ -43,6 +43,29 @@ async def test_provider_response_content_length_is_rejected_before_body_read() -
 
 
 @pytest.mark.asyncio
+async def test_provider_gzip_response_is_decoded_once() -> None:
+    import gzip
+
+    payload = gzip.compress(b'{"ok":true}')
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Encoding": "gzip",
+                "Content-Length": str(len(payload)),
+                "Content-Type": "application/json",
+            },
+            stream=httpx.ByteStream(payload),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        body = await request_json(client, "GET", "https://example.test/batch")
+
+    assert body == {"ok": True}
+
+
+@pytest.mark.asyncio
 async def test_result_record_overflow_preserves_prior_complete_records(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

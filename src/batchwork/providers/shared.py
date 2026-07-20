@@ -164,9 +164,14 @@ async def _bounded_response(response: httpx.Response, method: str, url: str) -> 
                 protocol_failure(response),
             )
         content.extend(chunk)
+    # aiter_bytes() already decoded any content-encoding, so the rebuilt
+    # response must not advertise the original encoding or stale length.
+    headers = httpx.Headers(response.headers)
+    headers.pop("content-encoding", None)
+    headers.pop("content-length", None)
     return httpx.Response(
         response.status_code,
-        headers=response.headers,
+        headers=headers,
         content=bytes(content),
         request=response.request,
         extensions=response.extensions,
