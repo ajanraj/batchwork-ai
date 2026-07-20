@@ -31,6 +31,7 @@ from ._config import ConfigError, ProviderConfig, load_config, registry_path, se
 from ._contract import (
     ErrorDetail,
     ErrorEnvelope,
+    Modality,
     Recovery,
     ResultEnvelope,
     ResultListEnvelope,
@@ -81,6 +82,7 @@ class LifecycleOptions:
     provider: str | None
     save: bool
     name: str | None
+    modality: Modality | None = None
     operation: str = "status"
 
 
@@ -243,6 +245,8 @@ def resolve_job(root: RootOptions, options: LifecycleOptions) -> ResolvedJob:
     loaded = load_config(root.config)
     if options.name is not None and not options.save:
         raise CliUsageError("--name requires --save.")
+    if options.modality is not None and not options.save:
+        raise CliUsageError("--modality requires --save.")
     if options.name is not None and not is_job_name(options.name):
         raise CliUsageError("--name must be 1-64 shell-safe characters and cannot be a record ID.")
 
@@ -560,6 +564,7 @@ def _adopt_if_requested(
             route=resolved.route.registry,
             snapshot=snapshot,
             registered_at=datetime.now(UTC),
+            modality=options.modality,
         )
     except (OSError, sqlite3.Error) as error:
         conflict = isinstance(error, RegistryNameConflict)
@@ -937,7 +942,10 @@ def render_results(result: LifecycleResult, mode: OutputMode) -> str:
         )
     lines = [f"Results for {result.resolved.machine_job}: {len(items)}"]
     for item in items:
-        preview = f" — {item.text[:80]}" if item.text else ""
+        if item.embedding is not None:
+            preview = f" — {len(item.embedding)} dimensions"
+        else:
+            preview = f" — {item.text[:80]}" if item.text else ""
         lines.append(f"{item.custom_id}: {item.status.value}{preview}")
     return "\n".join(lines) + "\n"
 

@@ -1348,6 +1348,110 @@ def test_embedding_provider_options_and_wire_shapes() -> None:
     }
 
 
+def test_embedding_defaults_apply_only_when_record_value_is_absent() -> None:
+    inherited, overridden = build_embedding_bodies(
+        BatchProvider.OPENAI,
+        "embed",
+        [
+            BatchEmbeddingRequest(value="one"),
+            BatchEmbeddingRequest(
+                value="two",
+                dimensions=64,
+                provider_options={"openai": {"user": "record"}},
+            ),
+        ],
+        defaults={
+            "dimensions": 128,
+            "provider_options": {"openai": {"user": "default"}},
+        },
+    )
+
+    assert inherited.body["dimensions"] == 128
+    assert inherited.body["user"] == "default"
+    assert overridden.body["dimensions"] == 64
+    assert overridden.body["user"] == "record"
+
+
+def test_embedding_strict_validation_rejects_collisions_and_unsupported_settings() -> None:
+    with pytest.raises(BatchworkError, match="conflicts"):
+        build_embedding_bodies(
+            BatchProvider.OPENAI,
+            "embed",
+            [
+                BatchEmbeddingRequest(
+                    value="hello",
+                    dimensions=128,
+                    provider_options={"openai": {"dimensions": 64}},
+                )
+            ],
+            strict=True,
+        )
+    with pytest.raises(BatchworkError, match="does not support"):
+        build_embedding_bodies(
+            BatchProvider.MISTRAL,
+            "embed",
+            [BatchEmbeddingRequest(value="hello", dimensions=128)],
+            strict=True,
+        )
+    with pytest.raises(BatchworkError, match="not supported"):
+        build_embedding_bodies(
+            BatchProvider.MISTRAL,
+            "embed",
+            [
+                BatchEmbeddingRequest(
+                    value="hello",
+                    provider_options={"mistral": {"unknown": True}},
+                )
+            ],
+            strict=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "options", "message"),
+    (
+        (BatchProvider.OPENAI, {"dimensions": "wide"}, "positive integer"),
+        (BatchProvider.OPENAI, {"user": 42}, "must be a string"),
+        (BatchProvider.GOOGLE, {"outputDimensionality": None}, "positive integer"),
+        (BatchProvider.GOOGLE, {"taskType": "UNKNOWN"}, "task type"),
+        (BatchProvider.GOOGLE, {"title": 42}, "must be a string"),
+    ),
+)
+def test_embedding_strict_validation_rejects_invalid_provider_option_values(
+    provider: BatchProvider,
+    options: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(BatchworkError, match=message):
+        build_embedding_bodies(
+            provider,
+            "embed",
+            [
+                BatchEmbeddingRequest(
+                    value="hello",
+                    provider_options={provider.value: options},
+                )
+            ],
+            strict=True,
+        )
+
+
+def test_embedding_dimension_collision_uses_key_presence() -> None:
+    with pytest.raises(BatchworkError, match="conflicts"):
+        build_embedding_bodies(
+            BatchProvider.GOOGLE,
+            "embed",
+            [
+                BatchEmbeddingRequest(
+                    value="hello",
+                    dimensions=128,
+                    provider_options={"google": {"outputDimensionality": None}},
+                )
+            ],
+            strict=True,
+        )
+
+
 def test_duplicate_ids_and_limits_fail_before_serialization() -> None:
     with pytest.raises(BatchworkError, match="duplicate customId"):
         build_text_bodies(

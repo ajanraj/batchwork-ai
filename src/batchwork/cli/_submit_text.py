@@ -7,7 +7,7 @@ import json
 import os
 import re
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,7 +17,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from batchwork._limits import MAX_PROVIDER_OPTIONS_BYTES
 from batchwork._text_validation import _text_endpoint_kind
-from batchwork.body import build_text_bodies, validate_request_count
+from batchwork.body import build_embedding_bodies, build_text_bodies, validate_request_count
 from batchwork.client import Batchwork
 from batchwork.errors import (
     BatchworkError,
@@ -27,9 +27,11 @@ from batchwork.errors import (
     _ProviderOptionError,
     _UnsupportedSettingError,
 )
+from batchwork.job import BatchJob
 from batchwork.media import DefaultMediaResolver
 from batchwork.types import (
     BatchDefaults,
+    BatchEmbeddingDefaults,
     BatchLimits,
     BatchProvider,
     JsonValue,
@@ -55,6 +57,7 @@ from ._contract import (
     ErrorEnvelope,
     Job,
     JobEnvelope,
+    Modality,
     Recovery,
     serialize_envelope,
 )
@@ -66,7 +69,7 @@ from ._failures import (
     TerminationRequested,
     provider_failure,
 )
-from ._input import load_text_requests
+from ._input import load_embedding_requests, load_text_requests
 from ._registry import RegistryRoute, insert_job
 from ._state import OutputMode, RootOptions
 from ._volume import WorkloadVolume, require_large_batch_authorization
@@ -116,6 +119,33 @@ class SubmitTextOptions:
     stop: Sequence[str]
     tool_choice: str | None
     endpoint: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SubmitEmbeddingOptions:
+    source: Path
+    model: str | None
+    input_format: str | None
+    name: str | None
+    batch_metadata: Sequence[str]
+    provider_options: str | None
+    provider_options_file: Path | None
+    allow_large_batch: bool
+    base_url: str | None
+    api_key_env: str | None
+    header: Sequence[str]
+    header_env: Sequence[str]
+    dimensions: int | None
+
+
+_CommonSubmitOptions = SubmitTextOptions | SubmitEmbeddingOptions
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedSubmission:
+    profile_name: str | None
+    spec: ModelSpec
+    route: ResolvedRoute
 
 
 def active_submission_signal_failure(*, interrupted: bool) -> CliFailure | None:
@@ -384,23 +414,21 @@ def _defaults(
         ) from error
 
 
-async def submit_text(
+def _prepare_submission(
     root: RootOptions,
-    options: SubmitTextOptions,
-) -> SubmissionResult:
-    global _active_submission_context
+    options: _CommonSubmitOptions,
+    *,
+    modality: Modality,
+    endpoint: str | None,
+    metadata_providers: frozenset[BatchProvider],
+) -> _PreparedSubmission:
     loaded = load_config(root.config)
     profile_name, profile = select_profile(loaded, root.profile)
-    selected_model = options.model or (profile.models.get("text") if profile else None)
+    selected_model = options.model or (profile.models.get(modality) if profile else None)
     if selected_model is None:
-        raise _usage("--model is required for submit text.")
-    spec = _model_spec(selected_model, options.endpoint)
-    if options.batch_metadata and spec.provider not in {
-        BatchProvider.OPENAI,
-        BatchProvider.GROQ,
-        BatchProvider.MISTRAL,
-        BatchProvider.TOGETHER,
-    }:
+        raise _usage(f"--model is required for submit {modality}.")
+    spec = _model_spec(selected_model, endpoint)
+    if options.batch_metadata and spec.provider not in metadata_providers:
         raise CliUsageError(
             f"Provider {spec.provider.value} does not support submission-level batch metadata.",
             code="unsupported_setting",
@@ -417,6 +445,169 @@ async def submit_text(
         header_env=options.header_env,
         profile=profile.providers.get(spec.provider) if profile else None,
     )
+    return _PreparedSubmission(profile_name, spec, route)
+
+
+async def _submit_to_provider(
+    submit: Callable[[], Awaitable[BatchJob]],
+    context: FailureContext,
+    *,
+    input_errors: tuple[type[Exception], ...] = (),
+) -> BatchJob:
+    global _active_submission_context
+    _active_submission_context = context
+    try:
+        job = await submit()
+    except (InterruptionRequested, TerminationRequested) as error:
+        _active_submission_context = None
+        raise _unknown_submission_signal_failure(
+            isinstance(error, InterruptionRequested), context
+        ) from None
+    except _LimitExceededError as error:
+        _active_submission_context = None
+        raise CliUsageError(str(error), code="hard_limit_exceeded") from error
+    except input_errors as error:
+        _active_submission_context = None
+        raise CliUsageError(str(error), code="input_validation_failed") from error
+    except Exception as error:
+        _active_submission_context = None
+        failure = provider_failure(error, context, submission=True)
+        if failure is None:
+            raise
+        raise failure from error
+    _active_submission_context = None
+    return job
+
+
+def _accepted_submission_error(
+    *,
+    job: BatchJob,
+    provider_reference: str,
+    prepared: _PreparedSubmission,
+    registry: Path,
+    interruption: InterruptionRequested | TerminationRequested | None = None,
+) -> ErrorEnvelope:
+    if interruption is not None:
+        interrupted = isinstance(interruption, InterruptionRequested)
+        action = "interrupted" if interrupted else "terminated"
+        code = action
+        category = action
+        message = (
+            f"Batchwork was {action} after the provider accepted the batch. "
+            "The remote job was not cancelled; resume with the direct reference."
+        )
+        exit_code = 130 if interrupted else 143
+    else:
+        code = "registry_write_failed_after_submit"
+        category = "local_state"
+        message = "The provider accepted the batch, but Batchwork could not record it locally."
+        exit_code = 8
+    return ErrorEnvelope(
+        error=ErrorDetail(
+            code=code,
+            category=category,
+            message=message,
+            exit_code=exit_code,
+            retryable=False,
+            operation="submit",
+            provider=job.provider,
+            job=provider_reference,
+            routing_fingerprint=prepared.route.registry.fingerprint,
+            profile=prepared.profile_name,
+            registry_path=str(registry),
+            submission_outcome="accepted",
+            partial_output=True,
+            records_emitted=1,
+            recovery=Recovery(
+                action="resume_with_direct_reference",
+                command=_direct_recovery_command(
+                    provider_reference,
+                    prepared.profile_name,
+                    prepared.route.registry,
+                ),
+            ),
+        )
+    )
+
+
+def _register_submission(
+    root: RootOptions,
+    *,
+    name: str | None,
+    prepared: _PreparedSubmission,
+    job: BatchJob,
+    modality: Modality,
+) -> SubmissionResult:
+    canonical_model = f"{prepared.spec.provider.value}/{prepared.spec.model_id}"
+    provider_reference = f"{job.provider.value}:{job.id}"
+    direct_job = Job(
+        provider=job.provider,
+        provider_job_id=job.id,
+        provider_reference=provider_reference,
+        routing_fingerprint=prepared.route.registry.fingerprint,
+        modality=modality,
+        model=canonical_model,
+        profile=prepared.profile_name,
+        status=job.status,
+        request_counts=job.request_counts,
+        provider_created_at=job.snapshot.created_at,
+    )
+    selected_registry_path = registry_path(root.registry)
+    try:
+        registered_job = insert_job(
+            selected_registry_path,
+            name=name,
+            model=canonical_model,
+            profile=prepared.profile_name,
+            route=prepared.route.registry,
+            snapshot=job.snapshot,
+            registered_at=datetime.now(UTC),
+            modality=modality,
+        )
+    except (InterruptionRequested, TerminationRequested) as error:
+        return SubmissionResult(
+            direct_job,
+            _accepted_submission_error(
+                job=job,
+                provider_reference=provider_reference,
+                prepared=prepared,
+                registry=selected_registry_path,
+                interruption=error,
+            ),
+        )
+    except (OSError, sqlite3.Error):
+        return SubmissionResult(
+            direct_job,
+            _accepted_submission_error(
+                job=job,
+                provider_reference=provider_reference,
+                prepared=prepared,
+                registry=selected_registry_path,
+            ),
+        )
+    return SubmissionResult(registered_job)
+
+
+async def submit_text(
+    root: RootOptions,
+    options: SubmitTextOptions,
+) -> SubmissionResult:
+    prepared = _prepare_submission(
+        root,
+        options,
+        modality="text",
+        endpoint=options.endpoint,
+        metadata_providers=frozenset(
+            {
+                BatchProvider.OPENAI,
+                BatchProvider.GROQ,
+                BatchProvider.MISTRAL,
+                BatchProvider.TOGETHER,
+            }
+        ),
+    )
+    spec = prepared.spec
+    route = prepared.route
     requests = load_text_requests(
         options.source,
         options.input_format,
@@ -470,15 +661,15 @@ async def submit_text(
         operation="submit",
         provider=spec.provider,
         routing_fingerprint=route.registry.fingerprint,
-        profile=profile_name,
+        profile=prepared.profile_name,
     )
     media_base_path = Path.cwd() if options.source == Path("-") else options.source.resolve().parent
-    _active_submission_context = submission_context
-    try:
+
+    async def submit() -> BatchJob:
         async with Batchwork(
             media_resolver=DefaultMediaResolver(base_path=media_base_path)
         ) as client:
-            job = await client._submit_text_batch(
+            return await client._submit_text_batch(
                 model=spec,
                 requests=requests,
                 defaults=defaults,
@@ -489,116 +680,108 @@ async def submit_text(
                 headers=route.headers,
                 validate_upload=validate_upload_size,
             )
-    except (InterruptionRequested, TerminationRequested) as error:
-        _active_submission_context = None
-        raise _unknown_submission_signal_failure(
-            isinstance(error, InterruptionRequested), submission_context
-        ) from None
-    except _LimitExceededError as error:
-        _active_submission_context = None
-        raise CliUsageError(str(error), code="hard_limit_exceeded") from error
-    except MediaResolutionError as error:
-        _active_submission_context = None
-        raise CliUsageError(str(error), code="input_validation_failed") from error
-    except Exception as error:
-        _active_submission_context = None
-        failure = provider_failure(
-            error,
-            submission_context,
-            submission=True,
-        )
-        if failure is None:
-            raise
-        raise failure from error
-    _active_submission_context = None
-    registered_at = datetime.now(UTC)
-    selected_registry_path = registry_path(root.registry)
-    canonical_model = f"{spec.provider.value}/{spec.model_id}"
-    provider_reference = f"{job.provider.value}:{job.id}"
-    direct_job = Job(
-        provider=job.provider,
-        provider_job_id=job.id,
-        provider_reference=provider_reference,
-        routing_fingerprint=route.registry.fingerprint,
+
+    job = await _submit_to_provider(
+        submit,
+        submission_context,
+        input_errors=(MediaResolutionError,),
+    )
+    return _register_submission(
+        root,
+        name=options.name,
+        prepared=prepared,
+        job=job,
         modality="text",
-        model=canonical_model,
-        profile=profile_name,
-        status=job.status,
-        request_counts=job.request_counts,
-        provider_created_at=job.snapshot.created_at,
+    )
+
+
+async def submit_embeddings(
+    root: RootOptions,
+    options: SubmitEmbeddingOptions,
+) -> SubmissionResult:
+    """Validate, submit, and durably identify one embedding batch."""
+    prepared = _prepare_submission(
+        root,
+        options,
+        modality="embeddings",
+        endpoint=None,
+        metadata_providers=frozenset({BatchProvider.OPENAI, BatchProvider.MISTRAL}),
+    )
+    spec = prepared.spec
+    route = prepared.route
+    requests = load_embedding_requests(
+        options.source,
+        options.input_format,
+        stdin=click.get_binary_stream("stdin") if options.source == Path("-") else None,
     )
     try:
-        registered_job = insert_job(
-            selected_registry_path,
-            name=options.name,
-            model=canonical_model,
-            profile=profile_name,
-            route=route.registry,
-            snapshot=job.snapshot,
-            registered_at=registered_at,
-        )
-    except (InterruptionRequested, TerminationRequested) as error:
-        interrupted = isinstance(error, InterruptionRequested)
-        action = "interrupted" if interrupted else "terminated"
-        return SubmissionResult(
-            direct_job,
-            ErrorEnvelope(
-                error=ErrorDetail(
-                    code=action,
-                    category=action,
-                    message=(
-                        f"Batchwork was {action} after the provider accepted the batch. "
-                        "The remote job was not cancelled; resume with the direct reference."
-                    ),
-                    exit_code=130 if interrupted else 143,
-                    retryable=False,
-                    operation="submit",
-                    provider=job.provider,
-                    job=provider_reference,
-                    routing_fingerprint=route.registry.fingerprint,
-                    profile=profile_name,
-                    registry_path=str(selected_registry_path),
-                    submission_outcome="accepted",
-                    partial_output=True,
-                    records_emitted=1,
-                    recovery=Recovery(
-                        action="resume_with_direct_reference",
-                        command=_direct_recovery_command(
-                            provider_reference, profile_name, route.registry
-                        ),
-                    ),
-                )
+        defaults = BatchEmbeddingDefaults(
+            dimensions=options.dimensions,
+            provider_options=_provider_options(
+                spec.provider, options.provider_options, options.provider_options_file
             ),
         )
-    except (OSError, sqlite3.Error):
-        error = ErrorEnvelope(
-            error=ErrorDetail(
-                code="registry_write_failed_after_submit",
-                category="local_state",
-                message=(
-                    "The provider accepted the batch, but Batchwork could not record it locally."
-                ),
-                exit_code=8,
-                retryable=False,
-                operation="submit",
-                provider=job.provider,
-                job=provider_reference,
-                routing_fingerprint=route.registry.fingerprint,
-                profile=profile_name,
-                registry_path=str(selected_registry_path),
-                submission_outcome="accepted",
-                partial_output=True,
-                records_emitted=1,
-                recovery=Recovery(
-                    action="resume_with_direct_reference",
-                    command=_direct_recovery_command(
-                        provider_reference, profile_name, route.registry
-                    ),
-                ),
-            )
+    except ValidationError as error:
+        raise _usage(
+            f"Invalid embedding defaults: {error.errors(include_url=False)[0]['msg']}."
+        ) from error
+    limits = BatchLimits()
+    try:
+        validate_request_count(requests, limits)
+        built = build_embedding_bodies(
+            spec.provider,
+            spec.model_id,
+            requests,
+            limits,
+            defaults=defaults,
+            strict=True,
         )
-        return SubmissionResult(direct_job, error)
-    return SubmissionResult(registered_job)
+    except _ProviderOptionError as error:
+        raise CliUsageError(str(error), code="provider_option_invalid") from error
+    except _OptionConflictError as error:
+        raise CliUsageError(str(error), code="option_conflict") from error
+    except _UnsupportedSettingError as error:
+        raise CliUsageError(str(error), code="unsupported_setting") from error
+    except (BatchworkError, ValueError) as error:
+        raise _usage(str(error)) from error
+    require_large_batch_authorization(
+        WorkloadVolume(requests=len(built)), authorized=options.allow_large_batch
+    )
+
+    def validate_upload_size(size: int) -> None:
+        require_large_batch_authorization(
+            WorkloadVolume(upload_bytes=size), authorized=options.allow_large_batch
+        )
+
+    submission_context = FailureContext(
+        operation="submit",
+        provider=spec.provider,
+        routing_fingerprint=route.registry.fingerprint,
+        profile=prepared.profile_name,
+    )
+
+    async def submit() -> BatchJob:
+        async with Batchwork() as client:
+            return await client._submit_embedding_batch(
+                model=spec,
+                requests=requests,
+                defaults=defaults,
+                metadata=_metadata(options.batch_metadata),
+                limits=limits,
+                api_key=route.api_key,
+                base_url=route.base_url,
+                headers=route.headers,
+                validate_upload=validate_upload_size,
+            )
+
+    job = await _submit_to_provider(submit, submission_context)
+    return _register_submission(
+        root,
+        name=options.name,
+        prepared=prepared,
+        job=job,
+        modality="embeddings",
+    )
 
 
 def _direct_recovery_command(
@@ -623,8 +806,9 @@ def render_job(job: Job, mode: OutputMode) -> str:
     if mode in {OutputMode.JSON, OutputMode.JSONL}:
         return serialize_envelope(JobEnvelope(job=job))
     selector = job.record_id or job.provider_reference
+    modality = job.modality or "batch"
     lines = [
-        "Submitted text batch",
+        f"Submitted {modality} batch",
         f"Job: {selector}",
         f"Provider: {job.provider.value}",
         f"Reference: {job.provider_reference}",

@@ -34,6 +34,11 @@ _CASES = (
     # OpenAI-compatible contract and remain covered here.
     _ProviderCase("together", "model-test", "/v1", supports_submission=False),
 )
+_EMBEDDING_CASES = (
+    _ProviderCase("openai", "text-embedding-test", "/v1"),
+    _ProviderCase("google", "text-embedding-test", "/v1beta"),
+    _ProviderCase("mistral", "mistral-embed-test", "/v1"),
+)
 
 
 def _installed_batchwork() -> str:
@@ -75,6 +80,21 @@ def _result_file() -> bytes:
     ).encode()
 
 
+def _embedding_result_file() -> bytes:
+    return (
+        json.dumps(
+            {
+                "custom_id": "request-0",
+                "response": {
+                    "status_code": 200,
+                    "body": {"data": [{"embedding": [0.1, 0.2, 0.3]}]},
+                },
+            }
+        )
+        + "\n"
+    ).encode()
+
+
 def _xai_results() -> dict[str, object]:
     return {
         "results": [
@@ -105,7 +125,7 @@ def _anthropic_results() -> bytes:
     ).encode()
 
 
-def _google_snapshot(*, done: bool) -> dict[str, object]:
+def _google_snapshot(*, done: bool, embedding: bool = False) -> dict[str, object]:
     return {
         "name": "batches/batch_123",
         "done": done,
@@ -122,9 +142,11 @@ def _google_snapshot(*, done: bool) -> dict[str, object]:
                     "inlinedResponses": [
                         {
                             "metadata": {"key": "request-0"},
-                            "response": {
-                                "candidates": [{"content": {"parts": [{"text": "hello"}]}}]
-                            },
+                            "response": (
+                                {"embedding": {"values": [0.1, 0.2, 0.3]}}
+                                if embedding
+                                else {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}
+                            ),
                         }
                     ]
                 }
@@ -147,9 +169,12 @@ def _mistral_snapshot(*, completed: bool) -> dict[str, object]:
 
 
 @contextmanager
-def _provider_server(case: _ProviderCase) -> Iterator[tuple[str, type[BaseHTTPRequestHandler]]]:
+def _provider_server(
+    case: _ProviderCase, *, embedding: bool = False
+) -> Iterator[tuple[str, type[BaseHTTPRequestHandler]]]:
     class Handler(BaseHTTPRequestHandler):
         requests: ClassVar[list[tuple[str, str]]] = []
+        bodies: ClassVar[list[tuple[str, bytes]]] = []
         cancel_pending: ClassVar[bool] = False
         cancelled: ClassVar[bool] = False
 
@@ -192,7 +217,7 @@ def _provider_server(case: _ProviderCase) -> Iterator[tuple[str, type[BaseHTTPRe
                     ),
                 }
             if case.provider == "google":
-                return _google_snapshot(done=completed)
+                return _google_snapshot(done=completed, embedding=embedding)
             if case.provider == "mistral":
                 return _mistral_snapshot(completed=completed)
             if case.provider == "xai":
@@ -210,9 +235,10 @@ def _provider_server(case: _ProviderCase) -> Iterator[tuple[str, type[BaseHTTPRe
 
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length", "0"))
-            self.rfile.read(length)
+            body = self.rfile.read(length)
             self.requests.append(("POST", self.path))
             path = self.path.split("?", 1)[0]
+            self.bodies.append((path, body))
             if path.endswith("/cancel") or path.endswith(":cancel"):
                 type(self).cancelled = True
                 self._json({})
@@ -228,9 +254,9 @@ def _provider_server(case: _ProviderCase) -> Iterator[tuple[str, type[BaseHTTPRe
                 self._json({"id": "file-input"})
             elif case.provider == "xai" and path == "/v1/batches":
                 self._json(self._snapshot())
-            elif case.provider in {"groq", "together"} and path == "/v1/files":
+            elif case.provider in {"openai", "groq", "together"} and path == "/v1/files":
                 self._json({"id": "file-input"})
-            elif case.provider in {"groq", "together"} and path == "/v1/batches":
+            elif case.provider in {"openai", "groq", "together"} and path == "/v1/batches":
                 self._json(self._snapshot())
             else:
                 self.send_error(404)
@@ -263,7 +289,7 @@ def _provider_server(case: _ProviderCase) -> Iterator[tuple[str, type[BaseHTTPRe
             if path == "/v1/batches/batch_123":
                 self._json(self._snapshot())
             elif path == "/v1/files/file-output/content":
-                self._jsonl(_result_file())
+                self._jsonl(_embedding_result_file() if embedding else _result_file())
             else:
                 self.send_error(404)
 
@@ -284,12 +310,29 @@ def _provider_server(case: _ProviderCase) -> Iterator[tuple[str, type[BaseHTTPRe
 
 
 def _run(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return _run_with_registry(tmp_path, tmp_path / f"{args[0]}.sqlite3", *args)
+
+
+def _run_with_registry(
+    tmp_path: Path, registry: Path, *args: str
+) -> subprocess.CompletedProcess[str]:
+    return _run_with_config_registry(tmp_path, registry, None, *args)
+
+
+def _run_with_config_registry(
+    tmp_path: Path,
+    registry: Path,
+    config: Path | None,
+    *args: str,
+) -> subprocess.CompletedProcess[str]:
+    global_options = ["--config", str(config)] if config is not None else []
     return subprocess.run(
         [
             _installed_batchwork(),
             "--json",
+            *global_options,
             "--registry",
-            str(tmp_path / f"{args[0]}.sqlite3"),
+            str(registry),
             *args,
         ],
         cwd=tmp_path,
@@ -372,3 +415,256 @@ def test_installed_text_lifecycle_for_each_provider(
             method == "POST" and (path.endswith("/cancel") or path.endswith(":cancel"))
             for method, path in handler.requests
         )
+
+
+@pytest.mark.parametrize("case", _EMBEDDING_CASES, ids=lambda case: case.provider)
+def test_installed_embedding_lifecycle_for_each_provider(
+    tmp_path: Path,
+    case: _ProviderCase,
+) -> None:
+    source = tmp_path / "embeddings.jsonl"
+    source.write_text('{"value":"hello"}\n')
+    dimension_args = [] if case.provider == "mistral" else ["--dimensions", "3"]
+    with _provider_server(case, embedding=True) as (base_url, handler):
+        ran = _run(
+            tmp_path,
+            "run",
+            "embeddings",
+            str(source),
+            "--model",
+            f"{case.provider}/{case.model}",
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_PROVIDER_KEY",
+            "--poll-interval",
+            ".01",
+            *dimension_args,
+        )
+        human = subprocess.run(
+            [
+                _installed_batchwork(),
+                "--human",
+                "--registry",
+                str(tmp_path / f"{case.provider}-human.sqlite3"),
+                "run",
+                "embeddings",
+                str(source),
+                "--model",
+                f"{case.provider}/{case.model}",
+                "--base-url",
+                base_url,
+                "--api-key-env",
+                "TEST_PROVIDER_KEY",
+                "--poll-interval",
+                ".01",
+                *dimension_args,
+            ],
+            cwd=tmp_path,
+            env=_environment(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        profile_config = tmp_path / f"{case.provider}-profile.toml"
+        profile_config.write_text(
+            f"""\
+schema_version = 1
+default_profile = "embedding"
+[profiles.embedding.models]
+embeddings = "{case.provider}/{case.model}"
+[profiles.embedding.providers.{case.provider}]
+api_key_env = "TEST_PROVIDER_KEY"
+base_url = "{base_url}"
+"""
+        )
+        profile_submit = subprocess.run(
+            [
+                _installed_batchwork(),
+                "--json",
+                "--config",
+                str(profile_config),
+                "--registry",
+                str(tmp_path / f"{case.provider}-profile.sqlite3"),
+                "submit",
+                "embeddings",
+                str(source),
+                *dimension_args,
+            ],
+            cwd=tmp_path,
+            env=_environment(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert profile_submit.returncode == 0, profile_submit.stderr
+        profile_registry = tmp_path / f"{case.provider}-profile.sqlite3"
+        profile_job = json.loads(profile_submit.stdout)["job"]
+        profile_selector = profile_job["record_id"]
+        profile_status = _run_with_config_registry(
+            tmp_path,
+            profile_registry,
+            profile_config,
+            "--profile",
+            "embedding",
+            "status",
+            profile_selector,
+        )
+        profile_wait = _run_with_config_registry(
+            tmp_path,
+            profile_registry,
+            profile_config,
+            "--profile",
+            "embedding",
+            "wait",
+            profile_selector,
+            "--poll-interval",
+            ".01",
+        )
+        profile_results = _run_with_config_registry(
+            tmp_path,
+            profile_registry,
+            profile_config,
+            "--profile",
+            "embedding",
+            "results",
+            profile_selector,
+        )
+        profile_cancel = _run_with_config_registry(
+            tmp_path,
+            profile_registry,
+            profile_config,
+            "--profile",
+            "embedding",
+            "cancel",
+            profile_selector,
+        )
+        assert ran.returncode == 0, ran.stderr
+        envelope = json.loads(ran.stdout)
+        direct = [
+            envelope["job"]["provider_reference"],
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_PROVIDER_KEY",
+        ]
+        status = _run(tmp_path, "status", *direct)
+        waited = _run(tmp_path, "wait", *direct, "--poll-interval", ".01")
+        results = _run(tmp_path, "results", *direct)
+
+        handler.requests = []
+        handler.cancel_pending = True
+        handler.cancelled = False
+        cancelled = _run(tmp_path, "cancel", *direct)
+
+        adoption_registry = tmp_path / f"{case.provider}-adoption.sqlite3"
+        adopted = _run_with_registry(
+            tmp_path,
+            adoption_registry,
+            "status",
+            *direct,
+            "--save",
+            "--name",
+            "adopted-embedding",
+            "--modality",
+            "embeddings",
+        )
+        listed = _run_with_registry(
+            tmp_path,
+            adoption_registry,
+            "list",
+            "--modality",
+            "embeddings",
+        )
+
+    assert envelope["job"]["modality"] == "embeddings"
+    expected_response = (
+        {"embedding": {"values": [0.1, 0.2, 0.3]}}
+        if case.provider == "google"
+        else {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
+    )
+    assert envelope["results"] == [
+        {
+            "custom_id": "request-0",
+            "status": "succeeded",
+            "embedding": [0.1, 0.2, 0.3],
+            "response": expected_response,
+        }
+    ]
+    assert human.returncode == 0, human.stderr
+    assert "3 dimensions" in human.stdout
+    assert "[0.1" not in human.stdout
+    assert profile_job["profile"] == "embedding"
+    for operation in (profile_status, profile_wait, profile_results, profile_cancel):
+        assert operation.returncode == 0, operation.stderr
+    assert json.loads(profile_results.stdout)["results"] == envelope["results"]
+    assert status.returncode == 0, status.stderr
+    assert waited.returncode == 0, waited.stderr
+    assert results.returncode == 0, results.stderr
+    assert json.loads(results.stdout)["results"] == envelope["results"]
+    assert cancelled.returncode == 0, cancelled.stderr
+    assert any(
+        method == "POST" and (path.endswith("/cancel") or path.endswith(":cancel"))
+        for method, path in handler.requests
+    )
+    assert adopted.returncode == 0, adopted.stderr
+    jobs = json.loads(listed.stdout)["jobs"]
+    assert len(jobs) == 1
+    assert jobs[0]["modality"] == "embeddings"
+    if case.provider == "openai":
+        upload = next(body for path, body in handler.bodies if path == "/v1/files")
+        request = next(
+            json.loads(line) for line in upload.splitlines() if line.startswith(b'{"custom_id"')
+        )
+        assert request == {
+            "custom_id": "request-0",
+            "method": "POST",
+            "url": "/v1/embeddings",
+            "body": {
+                "model": case.model,
+                "input": ["hello"],
+                "encoding_format": "float",
+                "dimensions": 3,
+            },
+        }
+    elif case.provider == "google":
+        path, body = next(
+            (path, body)
+            for path, body in handler.bodies
+            if path.endswith(":asyncBatchEmbedContent")
+        )
+        assert path == f"/v1beta/models/{case.model}:asyncBatchEmbedContent"
+        assert json.loads(body) == {
+            "batch": {
+                "display_name": "batchwork",
+                "input_config": {
+                    "requests": {
+                        "requests": [
+                            {
+                                "metadata": {"key": "request-0"},
+                                "request": {
+                                    "model": f"models/{case.model}",
+                                    "content": {"parts": [{"text": "hello"}]},
+                                    "embedContentConfig": {"outputDimensionality": 3},
+                                },
+                            }
+                        ]
+                    }
+                },
+            }
+        }
+    else:
+        upload = next(body for path, body in handler.bodies if path == "/v1/files")
+        request = next(
+            json.loads(line) for line in upload.splitlines() if line.startswith(b'{"custom_id"')
+        )
+        assert request == {
+            "custom_id": "request-0",
+            "body": {"input": ["hello"], "encoding_format": "float"},
+        }
+        create = next(body for path, body in handler.bodies if path == "/v1/batch/jobs")
+        assert json.loads(create) == {
+            "endpoint": "/v1/embeddings",
+            "input_files": ["file-input"],
+            "model": case.model,
+        }

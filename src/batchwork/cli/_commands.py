@@ -7,7 +7,7 @@ import math
 import re
 import sqlite3
 import sys
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NoReturn, TypeVar
@@ -27,6 +27,7 @@ from ._contract import (
     JobEnvelope,
     JobListEnvelope,
     KnownErrorCode,
+    Modality,
     PathsEnvelope,
     PathState,
     RegistryChangeEnvelope,
@@ -82,10 +83,19 @@ from ._registry import (
     reset_registry,
 )
 from ._state import OutputMode, RootOptions
-from ._submit_text import SubmissionResult, SubmitTextOptions, render_error, render_job
+from ._submit_text import (
+    SubmissionResult,
+    SubmitEmbeddingOptions,
+    SubmitTextOptions,
+    render_error,
+    render_job,
+)
+from ._submit_text import submit_embeddings as execute_submit_embeddings
 from ._submit_text import submit_text as execute_submit_text
 
 CommandFunction = TypeVar("CommandFunction", bound=Callable[..., object])
+SubmitOptions = TypeVar("SubmitOptions", SubmitTextOptions, SubmitEmbeddingOptions)
+SubmitFunction = Callable[[RootOptions, SubmitOptions], Awaitable[SubmissionResult]]
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 PROVIDER = click.Choice([provider.value for provider in BatchProvider], case_sensitive=True)
@@ -314,10 +324,20 @@ def _lifecycle_options(
     provider: str | None,
     save: bool,
     name: str | None,
+    modality: Modality | None,
     operation: str,
 ) -> LifecycleOptions:
     return LifecycleOptions(
-        job, base_url, api_key_env, header, header_env, provider, save, name, operation
+        job,
+        base_url,
+        api_key_env,
+        header,
+        header_env,
+        provider,
+        save,
+        name,
+        modality,
+        operation,
     )
 
 
@@ -500,6 +520,10 @@ def _direct_routing_options(function: CommandFunction) -> CommandFunction:
         click.option("--provider", type=PROVIDER),
         click.option("--save", is_flag=True),
         click.option("--name"),
+        click.option(
+            "--modality",
+            type=click.Choice(["text", "embeddings", "images"], case_sensitive=True),
+        ),
     )
     for option in reversed(options):
         function = option(function)
@@ -560,6 +584,135 @@ def cli(
         progress=progress and not quiet,
         color=color,
     )
+
+
+def _show_submission(root: RootOptions, result: SubmissionResult) -> None:
+    mode = root.output_mode or (OutputMode.HUMAN if sys.stdout.isatty() else OutputMode.JSON)
+    click.echo(render_job(result.job, mode), nl=False)
+    if result.error is not None:
+        click.echo(render_error(result.error, mode), nl=False, err=True)
+        raise click.exceptions.Exit(result.error.error.exit_code)
+
+
+def _run_submission(
+    root: RootOptions,
+    submit_options: SubmitOptions,
+    submit: SubmitFunction[SubmitOptions],
+    *,
+    timeout: str | None,
+    poll_interval: float | None,
+) -> None:
+    mode = _output_mode(root, streaming=True)
+    spool: JsonResultSpool | None = None
+    prepared_resolved: ResolvedJob | None = None
+    records_emitted = 0
+
+    async def execute() -> tuple[LifecycleResult, LifecycleResult]:
+        nonlocal spool, prepared_resolved, records_emitted
+        submission = await submit(root, submit_options)
+        if mode is not OutputMode.JSON or submission.error is not None:
+            click.echo(render_job(submission.job, mode), nl=False)
+            records_emitted += 1
+        if submission.error is not None:
+            click.echo(render_error(submission.error, mode), nl=False, err=True)
+            raise click.exceptions.Exit(submission.error.error.exit_code)
+        selector = submission.job.record_id or submission.job.provider_reference
+        lifecycle = LifecycleOptions(selector, None, None, (), (), None, False, None)
+        waited = await wait_job(
+            root,
+            lifecycle,
+            poll_interval=poll_interval or 15.0,
+            timeout_seconds=duration_seconds(timeout),
+        )
+        if mode is OutputMode.JSONL:
+            click.echo(
+                serialize_envelope(
+                    SnapshotEnvelope(job=waited.resolved.machine_job, snapshot=waited.snapshot)
+                ),
+                nl=False,
+            )
+            records_emitted += 1
+        elif mode is OutputMode.JSON:
+            prepared_resolved = waited.resolved
+            spool = JsonResultSpool(
+                RunEnvelope(job=submission.job, snapshot=waited.snapshot, results=[])
+            )
+
+        def emit_result(_resolved: ResolvedJob, item: BatchResult) -> None:
+            nonlocal records_emitted
+            if mode is OutputMode.JSONL:
+                click.echo(
+                    serialize_envelope(
+                        ResultEnvelope(
+                            job=waited.resolved.machine_job,
+                            routing_fingerprint=waited.resolved.machine_fingerprint,
+                            result=item,
+                        )
+                    ),
+                    nl=False,
+                )
+                records_emitted += 1
+            elif mode is OutputMode.JSON:
+                if spool is None:
+                    raise RuntimeError("batchwork: JSON run spool was not prepared")
+                spool.append(item)
+
+        def reset_buffer() -> None:
+            if spool is not None:
+                spool.reset()
+
+        collected = await results_job(
+            root,
+            lifecycle,
+            on_result=emit_result if mode in {OutputMode.JSON, OutputMode.JSONL} else None,
+            on_retry=reset_buffer if mode is OutputMode.JSON else None,
+            output_is_streaming=mode is OutputMode.JSONL,
+            initial_records_emitted=records_emitted if mode is OutputMode.JSONL else 0,
+        )
+        return waited, collected
+
+    try:
+        waited, collected = asyncio.run(execute())
+    except LifecycleFailure as failure:
+        if spool is not None:
+            spool.close()
+        if records_emitted:
+            detail = failure.envelope.error
+            failure = LifecycleFailure(
+                ErrorEnvelope(
+                    error=detail.model_copy(
+                        update={
+                            "partial_output": True,
+                            "records_emitted": detail.records_emitted or records_emitted,
+                        }
+                    )
+                )
+            )
+        _fail_lifecycle(failure, mode)
+        return
+    except OSError as error:
+        if spool is not None:
+            spool.close()
+        _fail_output(
+            error,
+            mode,
+            "run",
+            prepared_resolved,
+            records_emitted=records_emitted,
+        )
+    if mode is OutputMode.JSON:
+        if spool is None:
+            raise RuntimeError("batchwork: JSON run spool was not prepared")
+        try:
+            spool.publish()
+        except OSError as error:
+            _fail_output(error, mode, "run", waited.resolved)
+        finally:
+            spool.close()
+    elif mode is OutputMode.HUMAN:
+        click.echo(render_snapshot(waited, mode), nl=False)
+        click.echo(render_results(collected, mode), nl=False)
+    _fail_unsuccessful(collected, "run", mode)
 
 
 @cli.group(no_args_is_help=True)
@@ -629,20 +782,52 @@ def submit_text(
             ),
         )
     )
-    mode = root.output_mode or (OutputMode.HUMAN if sys.stdout.isatty() else OutputMode.JSON)
-    click.echo(render_job(result.job, mode), nl=False)
-    if result.error is not None:
-        click.echo(render_error(result.error, mode), nl=False, err=True)
-        raise click.exceptions.Exit(result.error.error.exit_code)
+    _show_submission(root, result)
 
 
 @submit.command("embeddings")
 @click.argument("source", type=click.Path(path_type=Path, dir_okay=False, allow_dash=True))
 @_creation_options
 @_embedding_options
-def submit_embeddings(**_: object) -> None:
+@click.pass_obj
+def submit_embeddings(
+    root: RootOptions,
+    source: Path,
+    model: str | None,
+    input_format: str | None,
+    name: str | None,
+    batch_metadata: tuple[str, ...],
+    provider_options: str | None,
+    provider_options_file: Path | None,
+    allow_large_batch: bool,
+    base_url: str | None,
+    api_key_env: str | None,
+    header: tuple[str, ...],
+    header_env: tuple[str, ...],
+    dimensions: int | None,
+) -> None:
     """Submit canonical embedding requests from SOURCE."""
-    _foundation_only()
+    result = asyncio.run(
+        execute_submit_embeddings(
+            root,
+            SubmitEmbeddingOptions(
+                source=source,
+                model=model,
+                input_format=input_format,
+                name=name,
+                batch_metadata=batch_metadata,
+                provider_options=provider_options,
+                provider_options_file=provider_options_file,
+                allow_large_batch=allow_large_batch,
+                base_url=base_url,
+                api_key_env=api_key_env,
+                header=header,
+                header_env=header_env,
+                dimensions=dimensions,
+            ),
+        )
+    )
+    _show_submission(root, result)
 
 
 @submit.command("images")
@@ -694,142 +879,37 @@ def run_text(
     poll_interval: float | None,
 ) -> None:
     """Run canonical text requests from SOURCE."""
-    mode = _output_mode(root, streaming=True)
-    spool: JsonResultSpool | None = None
-    prepared_resolved: ResolvedJob | None = None
-    records_emitted = 0
-    submit_options = SubmitTextOptions(
-        source=source,
-        model=model,
-        input_format=input_format,
-        name=name,
-        batch_metadata=batch_metadata,
-        provider_options=provider_options,
-        provider_options_file=provider_options_file,
-        allow_large_batch=allow_large_batch,
-        base_url=base_url,
-        api_key_env=api_key_env,
-        header=header,
-        header_env=header_env,
-        system=system,
-        max_output_tokens=max_output_tokens,
-        temperature=temperature,
-        top_p=top_p,
-        top_k=top_k,
-        seed=seed,
-        frequency_penalty=frequency_penalty,
-        presence_penalty=presence_penalty,
-        stop=stop,
-        tool_choice=tool_choice,
-        endpoint=endpoint,
+    _run_submission(
+        root,
+        SubmitTextOptions(
+            source=source,
+            model=model,
+            input_format=input_format,
+            name=name,
+            batch_metadata=batch_metadata,
+            provider_options=provider_options,
+            provider_options_file=provider_options_file,
+            allow_large_batch=allow_large_batch,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            header=header,
+            header_env=header_env,
+            system=system,
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            seed=seed,
+            frequency_penalty=frequency_penalty,
+            presence_penalty=presence_penalty,
+            stop=stop,
+            tool_choice=tool_choice,
+            endpoint=endpoint,
+        ),
+        execute_submit_text,
+        timeout=timeout,
+        poll_interval=poll_interval,
     )
-
-    async def execute() -> tuple[SubmissionResult, LifecycleResult, LifecycleResult]:
-        nonlocal spool, prepared_resolved, records_emitted
-        submission = await execute_submit_text(root, submit_options)
-        if mode is not OutputMode.JSON or submission.error is not None:
-            click.echo(render_job(submission.job, mode), nl=False)
-            records_emitted += 1
-        if submission.error is not None:
-            click.echo(render_error(submission.error, mode), nl=False, err=True)
-            raise click.exceptions.Exit(submission.error.error.exit_code)
-        selector = submission.job.record_id or submission.job.provider_reference
-        lifecycle = LifecycleOptions(selector, None, None, (), (), None, False, None)
-        waited = await wait_job(
-            root,
-            lifecycle,
-            poll_interval=poll_interval or 15.0,
-            timeout_seconds=duration_seconds(timeout),
-        )
-        if mode is OutputMode.JSONL:
-            click.echo(
-                serialize_envelope(
-                    SnapshotEnvelope(job=waited.resolved.machine_job, snapshot=waited.snapshot)
-                ),
-                nl=False,
-            )
-            records_emitted += 1
-        elif mode is OutputMode.JSON:
-            prepared_resolved = waited.resolved
-            spool = JsonResultSpool(
-                RunEnvelope(job=submission.job, snapshot=waited.snapshot, results=[])
-            )
-
-        def emit_result(_resolved: ResolvedJob, item: BatchResult) -> None:
-            nonlocal records_emitted
-            if mode is OutputMode.JSONL:
-                click.echo(
-                    serialize_envelope(
-                        ResultEnvelope(
-                            job=waited.resolved.machine_job,
-                            routing_fingerprint=waited.resolved.machine_fingerprint,
-                            result=item,
-                        )
-                    ),
-                    nl=False,
-                )
-                records_emitted += 1
-            elif mode is OutputMode.JSON:
-                if spool is None:
-                    raise RuntimeError("batchwork: JSON run spool was not prepared")
-                spool.append(item)
-
-        def reset_buffer() -> None:
-            if spool is not None:
-                spool.reset()
-
-        collected = await results_job(
-            root,
-            lifecycle,
-            on_result=emit_result if mode in {OutputMode.JSON, OutputMode.JSONL} else None,
-            on_retry=reset_buffer if mode is OutputMode.JSON else None,
-            output_is_streaming=mode is OutputMode.JSONL,
-            initial_records_emitted=records_emitted if mode is OutputMode.JSONL else 0,
-        )
-        return submission, waited, collected
-
-    try:
-        _submission, waited, collected = asyncio.run(execute())
-    except LifecycleFailure as failure:
-        if spool is not None:
-            spool.close()
-        if records_emitted:
-            detail = failure.envelope.error
-            failure = LifecycleFailure(
-                ErrorEnvelope(
-                    error=detail.model_copy(
-                        update={
-                            "partial_output": True,
-                            "records_emitted": detail.records_emitted or records_emitted,
-                        }
-                    )
-                )
-            )
-        _fail_lifecycle(failure, mode)
-        return
-    except OSError as error:
-        if spool is not None:
-            spool.close()
-        _fail_output(
-            error,
-            mode,
-            "run",
-            prepared_resolved,
-            records_emitted=records_emitted,
-        )
-    if mode is OutputMode.JSON:
-        if spool is None:
-            raise RuntimeError("batchwork: JSON run spool was not prepared")
-        try:
-            spool.publish()
-        except OSError as error:
-            _fail_output(error, mode, "run", waited.resolved)
-        finally:
-            spool.close()
-    elif mode is OutputMode.HUMAN:
-        click.echo(render_snapshot(waited, mode), nl=False)
-        click.echo(render_results(collected, mode), nl=False)
-    _fail_unsuccessful(collected, "run", mode)
 
 
 @run.command("embeddings")
@@ -837,9 +917,47 @@ def run_text(
 @_creation_options
 @_embedding_options
 @_wait_options
-def run_embeddings(**_: object) -> None:
+@click.pass_obj
+def run_embeddings(
+    root: RootOptions,
+    source: Path,
+    model: str | None,
+    input_format: str | None,
+    name: str | None,
+    batch_metadata: tuple[str, ...],
+    provider_options: str | None,
+    provider_options_file: Path | None,
+    allow_large_batch: bool,
+    base_url: str | None,
+    api_key_env: str | None,
+    header: tuple[str, ...],
+    header_env: tuple[str, ...],
+    dimensions: int | None,
+    timeout: str | None,
+    poll_interval: float | None,
+) -> None:
     """Run canonical embedding requests from SOURCE."""
-    _foundation_only()
+    _run_submission(
+        root,
+        SubmitEmbeddingOptions(
+            source=source,
+            model=model,
+            input_format=input_format,
+            name=name,
+            batch_metadata=batch_metadata,
+            provider_options=provider_options,
+            provider_options_file=provider_options_file,
+            allow_large_batch=allow_large_batch,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            header=header,
+            header_env=header_env,
+            dimensions=dimensions,
+        ),
+        execute_submit_embeddings,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    )
 
 
 @run.command("images")
@@ -867,11 +985,21 @@ def status(
     provider: str | None,
     save: bool,
     name: str | None,
+    modality: Modality | None,
 ) -> None:
     """Fetch one current snapshot for JOB."""
     mode = _output_mode(root)
     options = _lifecycle_options(
-        job, base_url, api_key_env, header, header_env, provider, save, name, "status"
+        job,
+        base_url,
+        api_key_env,
+        header,
+        header_env,
+        provider,
+        save,
+        name,
+        modality,
+        "status",
     )
     try:
         result = asyncio.run(status_job(root, options))
@@ -896,13 +1024,23 @@ def wait(
     provider: str | None,
     save: bool,
     name: str | None,
+    modality: Modality | None,
     timeout: str | None,
     poll_interval: float | None,
 ) -> None:
     """Wait locally until JOB reaches a terminal state."""
     mode = _output_mode(root)
     options = _lifecycle_options(
-        job, base_url, api_key_env, header, header_env, provider, save, name, "wait"
+        job,
+        base_url,
+        api_key_env,
+        header,
+        header_env,
+        provider,
+        save,
+        name,
+        modality,
+        "wait",
     )
     try:
         result = asyncio.run(
@@ -936,13 +1074,23 @@ def results(
     provider: str | None,
     save: bool,
     name: str | None,
+    modality: Modality | None,
 ) -> None:
     """Retrieve available terminal results for JOB without waiting."""
     if output_dir is not None:
         raise click.UsageError("--output-dir is available for image jobs only.")
     mode = _output_mode(root, streaming=True)
     options = _lifecycle_options(
-        job, base_url, api_key_env, header, header_env, provider, save, name, "results"
+        job,
+        base_url,
+        api_key_env,
+        header,
+        header_env,
+        provider,
+        save,
+        name,
+        modality,
+        "results",
     )
     spool: JsonResultSpool | None = None
     prepared_resolved: ResolvedJob | None = None
@@ -1038,11 +1186,21 @@ def cancel(
     provider: str | None,
     save: bool,
     name: str | None,
+    modality: Modality | None,
 ) -> None:
     """Request cancellation once, unless JOB is already terminal."""
     mode = _output_mode(root)
     options = _lifecycle_options(
-        job, base_url, api_key_env, header, header_env, provider, save, name, "cancel"
+        job,
+        base_url,
+        api_key_env,
+        header,
+        header_env,
+        provider,
+        save,
+        name,
+        modality,
+        "cancel",
     )
     try:
         result = asyncio.run(cancel_job(root, options))
