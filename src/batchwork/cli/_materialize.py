@@ -13,6 +13,7 @@ import tempfile
 import xml.etree.ElementTree as ElementTree
 import zlib
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from batchwork._limits import MAX_AGGREGATE_MEDIA_BYTES, MAX_DECODED_MEDIA_BYTES
 from batchwork.media import DefaultMediaResolver
@@ -331,6 +332,8 @@ class ImageMaterializer:
                 source = image.data if image.data is not None else image.url
                 if source is None:
                     continue
+                if image.data is None and urlsplit(source).scheme.lower() != "https":
+                    raise ValueError("provider image URLs must use HTTPS")
                 if image.data is not None and not image.data.startswith("data:"):
                     if len(image.data) > 4 * ((MAX_DECODED_MEDIA_BYTES + 2) // 3):
                         raise ValueError(

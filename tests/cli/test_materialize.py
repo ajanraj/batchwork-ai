@@ -95,6 +95,27 @@ async def test_materializer_never_interprets_provider_data_as_local_path(
     assert not list(output.glob("*.png"))
 
 
+@pytest.mark.parametrize("url", ("secret.png", "../secret.png", "http://example.com/image.png"))
+@pytest.mark.asyncio
+async def test_materializer_never_interprets_provider_url_as_local_path(
+    tmp_path: Path,
+    url: str,
+) -> None:
+    (tmp_path / "secret.png").write_bytes(_PNG)
+    output = prepare_output_directory(tmp_path / "images", operation="results")
+    materializer = ImageMaterializer(output, operation="results")
+    result = BatchResult(
+        custom_id="unsafe-url",
+        status=BatchResultStatus.SUCCEEDED,
+        images=[BatchImage(url=url, media_type="image/png")],
+    )
+
+    with pytest.raises(CliFailure, match="must use HTTPS"):
+        await materializer.materialize_result("bw_" + "a" * 32, None, result)
+
+    assert not list(output.glob("*.png"))
+
+
 @pytest.mark.asyncio
 async def test_materializer_rejects_unknown_bytes_declared_as_supported_image(
     tmp_path: Path,
