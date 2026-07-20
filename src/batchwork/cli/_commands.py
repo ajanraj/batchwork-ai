@@ -1427,6 +1427,10 @@ def results(
         )
         if known_modality is not None and known_modality != "images":
             raise CliUsageError("--output-dir is available for image jobs only.")
+        if known_modality is None and modality != "images":
+            raise CliUsageError(
+                "--output-dir with a job of unknown modality requires --modality images."
+            )
     materializer = (
         ImageMaterializer(
             prepare_output_directory(output_dir, operation="results"),

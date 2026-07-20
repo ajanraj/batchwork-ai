@@ -166,6 +166,40 @@ def test_jsonl_list_has_no_silent_cap_and_empty_list_has_no_output(tmp_path: Pat
     assert empty.stdout == ""
 
 
+def test_output_dir_with_unknown_record_modality_requires_explicit_images(tmp_path: Path) -> None:
+    registry = tmp_path / "registry.sqlite3"
+    adopted = adopt_job(
+        registry,
+        name="adopted",
+        profile=None,
+        route=_route(),
+        snapshot=_snapshot("batch_adopted", status=BatchStatus.COMPLETED),
+        registered_at=datetime.now(UTC),
+        modality=None,
+    )
+    assert adopted.job.record_id is not None
+    output_dir = tmp_path / "images"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "--registry",
+            str(registry),
+            "results",
+            adopted.job.record_id,
+            "--output-dir",
+            str(output_dir),
+        ],
+        prog_name="batchwork",
+        env={"TEST_API_KEY": "test-key", "TEST_GATEWAY_AUTH": "test-auth"},
+    )
+
+    assert result.exit_code == 2
+    assert "unknown modality requires --modality images" in result.stderr
+    assert not output_dir.exists()
+
+
 def test_forget_removes_exactly_one_local_record(tmp_path: Path) -> None:
     registry = tmp_path / "registry.sqlite3"
     now = datetime.now(UTC)
