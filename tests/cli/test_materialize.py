@@ -124,6 +124,9 @@ async def test_materializer_rejects_unknown_bytes_declared_as_supported_image(
     ("payload", "media_type", "extension"),
     (
         (b"\x89PNG\r\n\x1a\nnot-a-png", "image/png", "png"),
+        (b"\xff\xd8\xff\xc0\x00\x02\xff\xda\x00\x02\xff\xd9", "image/jpeg", "jpg"),
+        (b"GIF89a\x01\x00\x01\x00\x00\x00\x00;", "image/gif", "gif"),
+        (b"RIFF\x0c\x00\x00\x00WEBPVP8 \x00\x00\x00\x00", "image/webp", "webp"),
         (b"BMnot-a-bitmap", "image/bmp", "bin"),
     ),
 )

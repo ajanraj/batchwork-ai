@@ -98,48 +98,145 @@ def _valid_png(data: bytes) -> bool:
 def _valid_jpeg(data: bytes) -> bool:
     if len(data) < 4 or not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
         return False
-    return (
-        any(
-            marker in data
-            for marker in (
-                b"\xff\xc0",
-                b"\xff\xc1",
-                b"\xff\xc2",
-                b"\xff\xc3",
-                b"\xff\xc5",
-                b"\xff\xc6",
-                b"\xff\xc7",
-                b"\xff\xc9",
-                b"\xff\xca",
-                b"\xff\xcb",
-                b"\xff\xcd",
-                b"\xff\xce",
-                b"\xff\xcf",
-            )
-        )
-        and b"\xff\xda" in data
-    )
+    offset = 2
+    saw_frame = False
+    saw_scan = False
+    frame_markers = {
+        0xC0,
+        0xC1,
+        0xC2,
+        0xC3,
+        0xC5,
+        0xC6,
+        0xC7,
+        0xC9,
+        0xCA,
+        0xCB,
+        0xCD,
+        0xCE,
+        0xCF,
+    }
+    while offset < len(data):
+        if data[offset] != 0xFF:
+            return False
+        while offset < len(data) and data[offset] == 0xFF:
+            offset += 1
+        if offset >= len(data):
+            return False
+        marker = data[offset]
+        offset += 1
+        if marker == 0xD9:
+            return saw_frame and saw_scan and offset == len(data)
+        if marker in {0x01, *range(0xD0, 0xD8)}:
+            continue
+        if offset + 2 > len(data):
+            return False
+        length = int.from_bytes(data[offset : offset + 2], "big")
+        if length < 2 or offset + length > len(data):
+            return False
+        if marker in frame_markers:
+            if length < 8:
+                return False
+            saw_frame = True
+        if marker == 0xDA and length < 6:
+            return False
+        offset += length
+        if marker == 0xDA:
+            saw_scan = True
+            while offset + 1 < len(data):
+                marker_offset = data.find(b"\xff", offset)
+                if marker_offset < 0 or marker_offset + 1 >= len(data):
+                    return False
+                following = data[marker_offset + 1]
+                if following == 0x00 or 0xD0 <= following <= 0xD7:
+                    offset = marker_offset + 2
+                    continue
+                offset = marker_offset
+                break
+    return False
 
 
 def _valid_gif(data: bytes) -> bool:
-    return (
-        len(data) >= 14
-        and data.startswith((b"GIF87a", b"GIF89a"))
-        and int.from_bytes(data[6:8], "little") > 0
-        and int.from_bytes(data[8:10], "little") > 0
-        and data.endswith(b";")
-    )
+    if (
+        len(data) < 14
+        or not data.startswith((b"GIF87a", b"GIF89a"))
+        or int.from_bytes(data[6:8], "little") == 0
+        or int.from_bytes(data[8:10], "little") == 0
+    ):
+        return False
+    packed = data[10]
+    offset = 13 + (3 * (2 ** ((packed & 0x07) + 1)) if packed & 0x80 else 0)
+    saw_image = False
+
+    def skip_sub_blocks(start: int) -> int | None:
+        while start < len(data):
+            size = data[start]
+            start += 1
+            if size == 0:
+                return start
+            start += size
+            if start > len(data):
+                return None
+        return None
+
+    while offset < len(data):
+        block = data[offset]
+        if block == 0x3B:
+            return saw_image and offset + 1 == len(data)
+        if block == 0x21:
+            if offset + 2 > len(data):
+                return False
+            skipped = skip_sub_blocks(offset + 2)
+            if skipped is None:
+                return False
+            offset = skipped
+            continue
+        if block != 0x2C or offset + 10 > len(data):
+            return False
+        image_packed = data[offset + 9]
+        offset += 10
+        if image_packed & 0x80:
+            offset += 3 * (2 ** ((image_packed & 0x07) + 1))
+        if offset >= len(data):
+            return False
+        offset += 1
+        skipped = skip_sub_blocks(offset)
+        if skipped is None:
+            return False
+        saw_image = True
+        offset = skipped
+    return False
 
 
 def _valid_webp(data: bytes) -> bool:
-    return (
-        len(data) >= 20
-        and data.startswith(b"RIFF")
-        and data[8:12] == b"WEBP"
-        and int.from_bytes(data[4:8], "little") + 8 == len(data)
-        and data[12:16] in {b"VP8 ", b"VP8L", b"VP8X"}
-        and int.from_bytes(data[16:20], "little") <= len(data) - 20
-    )
+    if (
+        len(data) < 20
+        or not data.startswith(b"RIFF")
+        or data[8:12] != b"WEBP"
+        or int.from_bytes(data[4:8], "little") + 8 != len(data)
+    ):
+        return False
+    offset = 12
+    saw_image = False
+    while offset + 8 <= len(data):
+        chunk_type = data[offset : offset + 4]
+        size = int.from_bytes(data[offset + 4 : offset + 8], "little")
+        payload_start = offset + 8
+        payload_end = payload_start + size
+        if payload_end > len(data):
+            return False
+        payload = data[payload_start:payload_end]
+        if chunk_type == b"VP8 ":
+            saw_image = size >= 10 and payload[3:6] == b"\x9d\x01\x2a"
+        elif chunk_type == b"VP8L":
+            saw_image = size >= 5 and payload.startswith(b"\x2f")
+        elif chunk_type == b"VP8X":
+            if size != 10:
+                return False
+        elif chunk_type == b"ANMF":
+            saw_image = size >= 16
+        offset = payload_end + (size & 1)
+    return saw_image and offset == len(data)
 
 
 def _failure(
