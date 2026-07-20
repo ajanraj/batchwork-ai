@@ -51,9 +51,52 @@ asyncio.run(main())`;
       <a class="button button--quiet" href="/docs">Read the docs</a>
     </div>
 
-    <div class="fade-up install-row" style="--delay: 350ms">
-      <InstallCommand command="uv add batchwork-ai" label="uv install" />
-      <InstallCommand command="pip install batchwork-ai" label="pip install" />
+    <div
+      class="fade-up audience-toggle"
+      style="--delay: 320ms"
+      role="group"
+      aria-label="Show install commands for humans or agents"
+    >
+      <button
+        type="button"
+        class="audience-toggle__option is-active"
+        data-audience-option="humans"
+        aria-pressed="true">For humans</button
+      >
+      <button
+        type="button"
+        class="audience-toggle__option"
+        data-audience-option="agents"
+        aria-pressed="false">For agents</button
+      >
+    </div>
+
+    <div class="fade-up install-row" style="--delay: 350ms" data-audience-panel="humans">
+      <div class="install-command install-command--picker">
+        <span class="install-command__prompt" aria-hidden="true">$</span>
+        <span class="install-command__picker">
+          <select aria-label="Choose a package manager" data-pm-select>
+            <option value="uv add batchwork-ai" data-rest="add batchwork-ai">uv</option>
+            <option value="pip install batchwork-ai" data-rest="install batchwork-ai">pip</option>
+          </select>
+        </span>
+        <code data-pm-command>add batchwork-ai</code>
+        <button
+          class="install-command__action install-command__copy"
+          type="button"
+          data-copy-command="uv add batchwork-ai"
+          aria-label="Copy install command"
+        >
+          <span data-copy-label>Copy</span>
+          <span class="sr-only" aria-live="polite" data-copy-status></span>
+        </button>
+      </div>
+    </div>
+    <div class="install-row" data-audience-panel="agents" hidden>
+      <InstallCommand
+        command="npx skills add ajanraj/batchwork-ai@batchwork-ai"
+        label="Agent Skill install"
+      />
     </div>
 
     <div class="fade-up hero__example" style="--delay: 430ms">
