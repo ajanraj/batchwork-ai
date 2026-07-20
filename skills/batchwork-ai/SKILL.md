@@ -10,7 +10,7 @@ description: >-
   shell JSON parsing, provider APIs without Batchwork context, or general
   workflow orchestration.
 license: MIT
-compatibility: Requires Batchwork >=0.2,<0.3 with machine schema_version 1; provider operations require network access and environment-supplied credentials.
+compatibility: Requires an installed Batchwork CLI; provider operations require network access and environment-supplied credentials.
 metadata:
   version: "0.1.0"
 ---
@@ -30,15 +30,16 @@ or asynchronous work.
 
 1. Distinguish explanation from execution, read-only work from mutation, and foreground
    `run` from submit-and-resume.
-2. Prefer an installed `batchwork`. If it is absent or outside `>=0.2,<0.3`, do not install
-   or upgrade automatically. Ask for authorization, or offer
+2. Prefer an installed `batchwork`. If it is absent, do not install automatically. Ask for
+   authorization, or offer
    `uvx --from batchwork-ai batchwork` for an approved one-shot invocation.
-   If the executable is missing, its version is outside that range, or root/relevant command
-   help differs from this contract, stop all operational work. Do not invoke provider
-   operations before an authorized installation or upgrade restores compatibility.
+   If the executable is missing, stop all operational work.
+   If root or relevant command help differs from this contract, stop all operational work.
+   Do not invoke provider operations before an authorized installation or upgrade restores
+   compatibility.
 3. Inspect root and relevant command help without requiring credentials. Help does not prove
-   schema compatibility: validate `schema_version == 1` on every machine envelope before
-   reading its payload.
+   schema compatibility: validate `schema_version` on every machine envelope against the
+   [machine output](references/machine-output.md) contract before reading its payload.
 4. Resolve modality, source, full `provider/model`, profile, credential-variable name, and
    endpoint by documented precedence. Standard environment-variable names and provider
    built-in endpoints are valid resolved defaults. Never inspect secret values to infer an
