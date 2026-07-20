@@ -1,1 +1,1 @@
-{"schema_version":1,"type":"error","error":{"code":"hard_limit_exceeded","category":"usage","message":"Example error: hard_limit_exceeded.","exit_code":2,"retryable":false,"operation":"status"}}
+{"schema_version":1,"type":"error","error":{"code":"hard_limit_exceeded","category":"usage","message":"Example error: hard_limit_exceeded.","exit_code":2,"retryable":false,"operation":"submit"}}

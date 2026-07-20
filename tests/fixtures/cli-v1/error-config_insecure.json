@@ -1,1 +1,1 @@
-{"schema_version":1,"type":"error","error":{"code":"config_insecure","category":"configuration","message":"Example error: config_insecure.","exit_code":3,"retryable":false,"operation":"status"}}
+{"schema_version":1,"type":"error","error":{"code":"config_insecure","category":"configuration","message":"Example error: config_insecure.","exit_code":3,"retryable":false,"operation":"config"}}

@@ -108,6 +108,24 @@ Provider-returned IDs are validated before being used in paths.
 
 OpenAI provider options cover endpoint-specific fields such as reasoning effort/summary, storage, response includes, previous response IDs, tool controls, service tier, log probabilities, caching, user identifiers, and embedding dimensions.
 
+## CLI capability contract
+
+Provider-option keys are exact and endpoint-specific.
+
+Shared Chat/Responses keys are `forceReasoning`, `logprobs`, `promptCacheKey`, `promptCacheRetention`, `safetyIdentifier`, `serviceTier`, `systemMessageMode`, and `user`.
+
+`chat-completions` additionally supports `logitBias`, `maxCompletionTokens`, `metadata`, `parallelToolCalls`, `prediction`, `reasoningEffort`, `store`, and `textVerbosity`.
+
+`responses` additionally supports `allowedTools`, `contextManagement`, `conversation`, `include`, `instructions`, `maxToolCalls`, `metadata`, `parallelToolCalls`, `previousResponseId`, `reasoningEffort`, `reasoningSummary`, `store`, `textVerbosity`, and `truncation`.
+
+`completions` supports exactly `echo`, `logitBias`, `logprobs`, `suffix`, and `user`.
+
+Embedding options are `dimensions` and `user`. Canonical `dimensions` collides with the provider option of the same name.
+
+Image keys across implemented model families are `background`, `moderation`, `outputCompression`, `outputFormat`, `quality`, `style`, and `user`. DALL-E 2 accepts only `user`; DALL-E 3 accepts `quality`, `style`, and `user`; GPT Image accepts `background`, `moderation`, `outputCompression`, `outputFormat`, `quality`, and `user`.
+
+Unknown keys fail locally. Canonical `max_output_tokens` collides with `maxCompletionTokens`; Responses canonical `system` collides with `instructions`; canonical `tool_choice` collides with `allowedTools`; canonical image aspect ratio and seed are unsupported. Reasoning-mode sampling/penalty conflicts fail rather than being silently removed. Batch metadata is supported and forwarded. Image count is at most 1 for DALL-E 3 and 10 otherwise; model-family size and option enums are validated before upload.
+
 ## Media and output
 
 Image URLs can pass directly to supported OpenAI text models. PDF URLs pass directly only for Responses; other media forms are resolved before serialization. Generated-image requests use `batch_images()` instead of `batch()`.

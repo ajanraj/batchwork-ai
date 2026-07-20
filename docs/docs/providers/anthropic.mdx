@@ -58,6 +58,16 @@ Consecutive user/tool messages and assistant messages are grouped into Anthropic
 
 Anthropic provider options include speed, inference geography, fallbacks, cache control, user metadata, MCP/container settings, context management, output effort, thinking, tool controls, document context/citations, and strict-tool behavior where supported.
 
+## CLI capability contract
+
+The CLI uses Anthropic's native Messages endpoint; `--endpoint` is not accepted. Implemented request-root provider-option keys are exactly:
+
+`cacheControl`, `container`, `contextManagement`, `disableParallelToolUse`, `effort`, `fallbacks`, `inferenceGeo`, `mcpServers`, `metadata`, `speed`, `taskBudget`, `thinking`, and `toolStreaming`.
+
+Unknown keys fail local preflight. `cacheControl`, `container`, `contextManagement`, `metadata`, `taskBudget`, and `thinking` are objects; `fallbacks` and `mcpServers` are arrays; `disableParallelToolUse` and `toolStreaming` are booleans. When `thinking.type` is `enabled` or `adaptive`, canonical `temperature`, `top_k`, and `top_p` conflict and fail rather than being silently removed. Canonical frequency/presence penalties and seed are unsupported.
+
+CLI batch metadata is unsupported and fails locally. Anthropic text batches retain the package-wide 50,000-request, 20 MiB/request, and 200 MiB aggregate bounds unless a lower provider/model limit is known.
+
 ## Media and security
 
 Supported image and PDF URLs can be passed directly to Anthropic. Other media sources are resolved before serialization.

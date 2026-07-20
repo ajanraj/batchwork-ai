@@ -59,6 +59,7 @@ export const docsSidebar = [
         items: [
           "/docs",
           "/docs/installation",
+          "/docs/cli",
           "/docs/configuration",
           "/docs/examples",
         ],
@@ -79,6 +80,8 @@ export const docsSidebar = [
         label: "API reference",
         items: [
           "/docs/api",
+          "/docs/reference/cli-machine-schema",
+          "/docs/reference/cli-configuration-registry",
           "/docs/modalities/text",
           "/docs/modalities/embeddings",
           "/docs/modalities/images",

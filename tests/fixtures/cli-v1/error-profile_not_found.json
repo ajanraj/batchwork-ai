@@ -1,1 +1,1 @@
-{"schema_version":1,"type":"error","error":{"code":"profile_not_found","category":"configuration","message":"Example error: profile_not_found.","exit_code":3,"retryable":false,"operation":"status"}}
+{"schema_version":1,"type":"error","error":{"code":"profile_not_found","category":"configuration","message":"Example error: profile_not_found.","exit_code":3,"retryable":false,"operation":"config"}}

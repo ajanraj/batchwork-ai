@@ -1,1 +1,1 @@
-{"schema_version":1,"type":"error","error":{"code":"option_conflict","category":"usage","message":"Example error: option_conflict.","exit_code":2,"retryable":false,"operation":"status"}}
+{"schema_version":1,"type":"error","error":{"code":"option_conflict","category":"usage","message":"Example error: option_conflict.","exit_code":2,"retryable":false,"operation":"submit"}}

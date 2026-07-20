@@ -1,1 +1,1 @@
-{"schema_version":1,"type":"error","error":{"code":"usage_error","category":"usage","message":"Example error: usage_error.","exit_code":2,"retryable":false,"operation":"status"}}
+{"schema_version":1,"type":"error","error":{"code":"usage_error","category":"usage","message":"Example error: usage_error.","exit_code":2,"retryable":false,"operation":"cli"}}

@@ -66,6 +66,14 @@ Known options rename user, reasoning effort, and text verbosity fields. Other To
 
 Assistant reasoning is serialized as `reasoning_content`.
 
+## CLI capability contract
+
+Only `chat-completions` is a valid explicit `--endpoint`. Together is the sole documented request-root passthrough exception: unrecognized exact keys are forwarded unchanged after validation of protected fields. Treat every passthrough value as trusted provider request configuration.
+
+The reserved keys `custom_id`, `customId`, `input`, `messages`, `model`, `prompt`, and `stream` always fail. Provider options cannot change identity, model, endpoint, method, authentication, input ownership, or forced non-streaming behavior. Canonical values collide with passthrough `frequency_penalty`, `max_tokens`, `presence_penalty`, `seed`, `stop`, `temperature`, `tool_choice`, and `top_p`; specifying both fails. Canonical `top_k` is unsupported.
+
+Batch metadata is supported and forwarded. Package hard bounds are 50,000 requests, 20 MiB per serialized request, and 200 MiB aggregate, subject to lower Together/model limits.
+
 ## Results and limitations
 
 Together uses output/error file normalization for text, usage, and item errors. Provider-specific fields remain in `result.response`.

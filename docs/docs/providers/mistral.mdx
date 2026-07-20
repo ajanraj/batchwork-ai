@@ -68,6 +68,12 @@ Mistral-specific uppercase states, including timeout and cancellation-requested 
 
 Mistral provider options include safe prompt, reasoning effort, document image/page limits, and parallel tool calls.
 
+## CLI capability contract
+
+Exact text provider-option keys are `documentImageLimit`, `documentPageLimit`, `parallelToolCalls`, `reasoningEffort`, and `safePrompt`. Only `chat-completions` is a valid explicit `--endpoint`. Unknown keys fail locally; document limits are positive integers, `parallelToolCalls` and `safePrompt` are booleans, and `reasoningEffort` is a string. Canonical frequency/presence penalties and `top_k` are unsupported.
+
+CLI embedding provider options: none. Canonical embedding `dimensions` is also unsupported and fails before upload. Batch metadata is supported and forwarded. Package hard bounds are 50,000 requests, 20 MiB per serialized request, and 200 MiB aggregate, subject to lower Mistral/model limits.
+
 ## Media
 
 Mistral text requests support images and PDFs. HTTPS PDF URLs can pass directly. Image URLs and other resolvable image sources are downloaded and inlined. Other file media types are rejected.

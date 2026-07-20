@@ -1,0 +1,16 @@
+schema_version = 1
+default_profile = "work"
+
+[profiles.work.models]
+text = "openai/gpt-5"
+embeddings = "openai/text-embedding-3-small"
+images = "openai/gpt-image-1"
+
+[profiles.work.providers.openai]
+api_key_env = "OPENAI_API_KEY"
+
+[profiles.work.providers.openai.headers]
+X-Application = "batchwork-cli"
+
+[profiles.work.providers.openai.header_env]
+X-Gateway-Authorization = "WORK_GATEWAY_AUTHORIZATION"

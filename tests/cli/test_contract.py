@@ -8,7 +8,9 @@ from pydantic import ValidationError
 
 from batchwork.cli._contract import (
     CANONICAL_ERROR_CODES,
+    DOC_PATH,
     ERROR_CODE_CATEGORIES,
+    ERROR_EXAMPLE_OPERATIONS,
     EXIT_CODE_BY_CATEGORY,
     FIXTURE_DIRECTORY,
     SCHEMA_PATH,
@@ -17,6 +19,7 @@ from batchwork.cli._contract import (
     ResultEnvelope,
     envelope_adapter,
     fixture_documents,
+    reference_document,
     schema_document,
     serialize_envelope,
 )
@@ -25,6 +28,7 @@ from batchwork.types import BatchResult, BatchResultStatus
 
 def test_checked_in_schema_and_fixtures_match_typed_contract() -> None:
     assert SCHEMA_PATH.read_text() == schema_document()
+    assert DOC_PATH.read_text() == reference_document()
 
     generated = fixture_documents()
     checked_in = {path.name: path.read_text() for path in sorted(FIXTURE_DIRECTORY.glob("*.json"))}
@@ -46,6 +50,7 @@ def test_canonical_error_fixtures_cover_exactly_the_stable_catalog() -> None:
         error = document["error"]
         assert error["category"] == ERROR_CODE_CATEGORIES[error["code"]]
         assert error["exit_code"] == EXIT_CODE_BY_CATEGORY[error["category"]]
+        assert error["operation"] == ERROR_EXAMPLE_OPERATIONS[error["code"]]
 
 
 @pytest.mark.parametrize("path", sorted(FIXTURE_DIRECTORY.glob("*.json")))
@@ -114,6 +119,14 @@ def test_image_manifest_fixture_uses_normative_filename_vector() -> None:
     document = json.loads(fixture_documents()["image_manifest.json"])
 
     assert document["images"][0]["path"] == "request-0--c1185fd39a30--1.png"
+
+
+def test_accepted_submission_fixture_has_route_complete_recovery() -> None:
+    document = json.loads(fixture_documents()["error.json"])
+
+    command = document["error"]["recovery"]["command"]
+    assert command[:3] == ["batchwork", "status", "openai:batch_example"]
+    assert command[3:] == ["--api-key-env", "EXAMPLE_OPENAI_API_KEY"]
 
 
 def test_machine_contract_serializes_utc_timestamps_with_z() -> None:

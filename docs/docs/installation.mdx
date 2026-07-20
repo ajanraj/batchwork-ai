@@ -17,6 +17,24 @@ pip install batchwork-ai
 
 Batchwork requires Python 3.11 or newer. The base install contains HTTPX and Pydantic; provider SDKs are not runtime dependencies.
 
+## Install the CLI
+
+Install the `batchwork` executable as an isolated tool:
+
+```console
+uv tool install batchwork-ai
+batchwork --version
+batchwork --help
+```
+
+For an approved one-shot command without a permanent tool install:
+
+```console
+uvx --from batchwork-ai batchwork --help
+```
+
+Help, version, and shell completion work without configuration, a registry, or credentials. See the [CLI guide](/docs/cli) for human and agent quick starts.
+
 Add the optional Upstash Redis store only when needed:
 
 ```bash
@@ -28,3 +46,13 @@ pip install "batchwork-ai[redis]"
 Continue with [Configuration](/docs/configuration) for model syntax, provider credentials, endpoint overrides, supported modalities, and batch limits. Credentials may be configured once on `Batchwork`, supplied per call, or read from environment variables.
 
 Submitting a batch performs network requests and creates a real provider job. Provider usage and storage charges may apply.
+
+## Install the Agent Skill
+
+The portable `batchwork-ai` Agent Skill requires Batchwork `>=0.2,<0.3` and machine schema version 1:
+
+```console
+npx skills add ajanraj/batchwork-ai@batchwork-ai
+```
+
+For reproducible installation, select the repository release tag or exact commit supported by your skills client, then verify the installed `SKILL.md` came from that revision. The skill invokes `batchwork` directly and contains no scripts or second orchestration layer.

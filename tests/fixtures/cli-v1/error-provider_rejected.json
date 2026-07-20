@@ -1,1 +1,1 @@
-{"schema_version":1,"type":"error","error":{"code":"provider_rejected","category":"provider_rejection","message":"Example error: provider_rejected.","exit_code":4,"retryable":false,"operation":"status"}}
+{"schema_version":1,"type":"error","error":{"code":"provider_rejected","category":"provider_rejection","message":"Example error: provider_rejected.","exit_code":4,"retryable":false,"operation":"submit"}}

@@ -1,1 +1,1 @@
-{"schema_version":1,"type":"error","error":{"code":"result_stream_failed","category":"provider_availability","message":"Example error: result_stream_failed.","exit_code":5,"retryable":false,"operation":"status"}}
+{"schema_version":1,"type":"error","error":{"code":"result_stream_failed","category":"provider_availability","message":"Example error: result_stream_failed.","exit_code":5,"retryable":false,"operation":"results"}}

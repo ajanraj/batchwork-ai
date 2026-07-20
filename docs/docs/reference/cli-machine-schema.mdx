@@ -1,0 +1,1284 @@
+---
+title: CLI machine schema
+description: Generated schema-v1 envelopes and credential-free examples.
+---
+
+This page is generated from Batchwork's typed machine-output models. Do not edit it by hand. The normative JSON Schema is available at [`/schemas/batchwork-cli-v1.schema.json`](/schemas/batchwork-cli-v1.schema.json).
+
+Every machine record uses `schema_version: 1` and a discriminating `type`. Consumers must reject unknown schema versions, may ignore additive fields, and must read primary data from stdout and the single structured error from stderr.
+
+## Successful envelopes
+
+### `job`
+
+Credential-free fixture: `tests/fixtures/cli-v1/job.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "job",
+  "job": {
+    "record_id": "bw_0123456789abcdef0123456789abcdef",
+    "name": "example",
+    "provider": "openai",
+    "provider_job_id": "batch_example",
+    "provider_reference": "openai:batch_example",
+    "routing_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "modality": "images",
+    "model": "openai/gpt-image-1",
+    "status": "completed",
+    "request_counts": {
+      "total": 2,
+      "completed": 2,
+      "failed": 0
+    },
+    "registered_at": "2026-07-19T12:00:00Z",
+    "provider_created_at": "2026-07-19T12:00:00Z",
+    "completed_at": "2026-07-19T12:00:00Z",
+    "terminal_at": "2026-07-19T12:00:00Z",
+    "last_refreshed_at": "2026-07-19T12:00:00Z"
+  }
+}
+```
+
+### `snapshot`
+
+Credential-free fixture: `tests/fixtures/cli-v1/snapshot.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "snapshot",
+  "job": "bw_0123456789abcdef0123456789abcdef",
+  "snapshot": {
+    "id": "batch_example",
+    "provider": "openai",
+    "status": "completed",
+    "request_counts": {
+      "total": 2,
+      "completed": 2,
+      "failed": 0
+    },
+    "raw": {
+      "providerState": "completed"
+    },
+    "created_at": "2026-07-19T12:00:00Z",
+    "completed_at": "2026-07-19T12:00:00Z"
+  }
+}
+```
+
+### `result`
+
+Credential-free fixture: `tests/fixtures/cli-v1/result.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "result",
+  "job": "bw_0123456789abcdef0123456789abcdef",
+  "result": {
+    "custom_id": "request-0",
+    "status": "succeeded",
+    "images": [
+      {
+        "url": "https://example.com/image.png"
+      }
+    ],
+    "response": {
+      "providerField": "preserved"
+    }
+  },
+  "materialization": {
+    "output_dir": "/home/example/output",
+    "manifest": "manifest.json",
+    "images": [
+      {
+        "path": "request-0--c1185fd39a30--1.png",
+        "custom_id": "request-0",
+        "image_index": 1,
+        "source_kind": "url",
+        "media_type": "image/png",
+        "byte_count": 68,
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ]
+  }
+}
+```
+
+### `job_list`
+
+Credential-free fixture: `tests/fixtures/cli-v1/job_list.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "job_list",
+  "jobs": [
+    {
+      "record_id": "bw_0123456789abcdef0123456789abcdef",
+      "name": "example",
+      "provider": "openai",
+      "provider_job_id": "batch_example",
+      "provider_reference": "openai:batch_example",
+      "routing_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+      "modality": "images",
+      "model": "openai/gpt-image-1",
+      "status": "completed",
+      "request_counts": {
+        "total": 2,
+        "completed": 2,
+        "failed": 0
+      },
+      "registered_at": "2026-07-19T12:00:00Z",
+      "provider_created_at": "2026-07-19T12:00:00Z",
+      "completed_at": "2026-07-19T12:00:00Z",
+      "terminal_at": "2026-07-19T12:00:00Z",
+      "last_refreshed_at": "2026-07-19T12:00:00Z"
+    }
+  ]
+}
+```
+
+### `result_list`
+
+Credential-free fixture: `tests/fixtures/cli-v1/result_list.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "result_list",
+  "job": "bw_0123456789abcdef0123456789abcdef",
+  "results": [
+    {
+      "custom_id": "request-0",
+      "status": "succeeded",
+      "images": [
+        {
+          "url": "https://example.com/image.png"
+        }
+      ],
+      "response": {
+        "providerField": "preserved"
+      }
+    }
+  ],
+  "materialization": {
+    "output_dir": "/home/example/output",
+    "manifest": "manifest.json",
+    "images": [
+      {
+        "path": "request-0--c1185fd39a30--1.png",
+        "custom_id": "request-0",
+        "image_index": 1,
+        "source_kind": "url",
+        "media_type": "image/png",
+        "byte_count": 68,
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ]
+  }
+}
+```
+
+### `run`
+
+Credential-free fixture: `tests/fixtures/cli-v1/run.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "run",
+  "job": {
+    "record_id": "bw_0123456789abcdef0123456789abcdef",
+    "name": "example",
+    "provider": "openai",
+    "provider_job_id": "batch_example",
+    "provider_reference": "openai:batch_example",
+    "routing_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "modality": "images",
+    "model": "openai/gpt-image-1",
+    "status": "completed",
+    "request_counts": {
+      "total": 2,
+      "completed": 2,
+      "failed": 0
+    },
+    "registered_at": "2026-07-19T12:00:00Z",
+    "provider_created_at": "2026-07-19T12:00:00Z",
+    "completed_at": "2026-07-19T12:00:00Z",
+    "terminal_at": "2026-07-19T12:00:00Z",
+    "last_refreshed_at": "2026-07-19T12:00:00Z"
+  },
+  "snapshot": {
+    "id": "batch_example",
+    "provider": "openai",
+    "status": "completed",
+    "request_counts": {
+      "total": 2,
+      "completed": 2,
+      "failed": 0
+    },
+    "raw": {
+      "providerState": "completed"
+    },
+    "created_at": "2026-07-19T12:00:00Z",
+    "completed_at": "2026-07-19T12:00:00Z"
+  },
+  "results": [
+    {
+      "custom_id": "request-0",
+      "status": "succeeded",
+      "images": [
+        {
+          "url": "https://example.com/image.png"
+        }
+      ],
+      "response": {
+        "providerField": "preserved"
+      }
+    }
+  ],
+  "materialization": {
+    "output_dir": "/home/example/output",
+    "manifest": "manifest.json",
+    "images": [
+      {
+        "path": "request-0--c1185fd39a30--1.png",
+        "custom_id": "request-0",
+        "image_index": 1,
+        "source_kind": "url",
+        "media_type": "image/png",
+        "byte_count": 68,
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ]
+  }
+}
+```
+
+### `paths`
+
+Credential-free fixture: `tests/fixtures/cli-v1/paths.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "paths",
+  "config": {
+    "path": "/home/example/.config/batchwork/config.toml",
+    "exists": true
+  },
+  "registry": {
+    "path": "/home/example/.local/share/batchwork/registry.sqlite3",
+    "exists": true
+  }
+}
+```
+
+### `config_validation`
+
+Credential-free fixture: `tests/fixtures/cli-v1/config_validation.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "config_validation",
+  "path": "/home/example/.config/batchwork/config.toml",
+  "exists": true,
+  "valid": true,
+  "config_schema_version": 1,
+  "profiles": [
+    "work"
+  ],
+  "default_profile": "work",
+  "credentials_read": false
+}
+```
+
+### `config_view`
+
+Credential-free fixture: `tests/fixtures/cli-v1/config_view.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "config_view",
+  "path": "/home/example/.config/batchwork/config.toml",
+  "profile": "work",
+  "models": {
+    "text": "openai/gpt-5.6-sol"
+  },
+  "providers": {
+    "openai": {
+      "api_key_env": "WORK_OPENAI_API_KEY",
+      "base_url": "https://gateway.example.com/v1",
+      "headers": {
+        "X-Application": "batchwork-cli"
+      },
+      "header_env": {
+        "Authorization": "WORK_GATEWAY_AUTHORIZATION"
+      }
+    }
+  },
+  "credentials_read": false
+}
+```
+
+### `registry_check`
+
+Credential-free fixture: `tests/fixtures/cli-v1/registry_check.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "registry_check",
+  "path": "/home/example/.local/share/batchwork/registry.sqlite3",
+  "ok": true,
+  "user_version": 1,
+  "integrity": "ok"
+}
+```
+
+### `registry_prune_plan`
+
+Credential-free fixture: `tests/fixtures/cli-v1/registry_prune_plan.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "registry_prune_plan",
+  "path": "/home/example/.local/share/batchwork/registry.sqlite3",
+  "older_than": "30d",
+  "cutoff_at": "2026-07-19T12:00:00Z",
+  "candidate_records": 12,
+  "committed": false,
+  "remote_jobs_changed": false
+}
+```
+
+### `registry_change`
+
+Credential-free fixture: `tests/fixtures/cli-v1/registry_change.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "registry_change",
+  "operation": "forget",
+  "path": "/home/example/.local/share/batchwork/registry.sqlite3",
+  "changed_records": 1,
+  "record_id": "bw_0123456789abcdef0123456789abcdef",
+  "provider_reference": "openai:batch_example",
+  "remote_jobs_changed": false
+}
+```
+
+### `image_manifest`
+
+Credential-free fixture: `tests/fixtures/cli-v1/image_manifest.json`.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "image_manifest",
+  "job": "bw_0123456789abcdef0123456789abcdef",
+  "images": [
+    {
+      "path": "request-0--c1185fd39a30--1.png",
+      "custom_id": "request-0",
+      "image_index": 1,
+      "source_kind": "url",
+      "media_type": "image/png",
+      "byte_count": 68,
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ]
+}
+```
+
+## Error envelope
+
+Expected machine failures write exactly one `error` envelope to stderr. `error.code` is the stable recovery key; `message` is explanatory text.
+
+### Accepted but not recorded
+
+This representative fixture preserves direct provider identity after remote acceptance and local registry failure.
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "registry_write_failed_after_submit",
+    "category": "local_state",
+    "message": "The provider accepted the batch, but Batchwork could not record it locally.",
+    "exit_code": 8,
+    "retryable": false,
+    "operation": "submit",
+    "provider": "openai",
+    "job": "openai:batch_example",
+    "routing_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "submission_outcome": "accepted",
+    "partial_output": true,
+    "records_emitted": 1,
+    "recovery": {
+      "action": "resume_with_direct_reference",
+      "command": [
+        "batchwork",
+        "status",
+        "openai:batch_example",
+        "--api-key-env",
+        "EXAMPLE_OPENAI_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+## Error-code examples
+
+Each stable error code below has its own credential-free fixture generated from the same typed catalog.
+
+### `internal_error`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "internal_error",
+    "category": "internal",
+    "message": "Example error: internal_error.",
+    "exit_code": 1,
+    "retryable": false,
+    "operation": "cli"
+  }
+}
+```
+
+### `usage_error`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "usage_error",
+    "category": "usage",
+    "message": "Example error: usage_error.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "cli"
+  }
+}
+```
+
+### `invalid_job_selector`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "invalid_job_selector",
+    "category": "usage",
+    "message": "Example error: invalid_job_selector.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "status"
+  }
+}
+```
+
+### `input_read_failed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "input_read_failed",
+    "category": "usage",
+    "message": "Example error: input_read_failed.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `input_parse_failed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "input_parse_failed",
+    "category": "usage",
+    "message": "Example error: input_parse_failed.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `input_validation_failed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "input_validation_failed",
+    "category": "usage",
+    "message": "Example error: input_validation_failed.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `duplicate_custom_id`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "duplicate_custom_id",
+    "category": "usage",
+    "message": "Example error: duplicate_custom_id.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `unsupported_modality`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "unsupported_modality",
+    "category": "usage",
+    "message": "Example error: unsupported_modality.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `unsupported_setting`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "unsupported_setting",
+    "category": "usage",
+    "message": "Example error: unsupported_setting.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `provider_option_invalid`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "provider_option_invalid",
+    "category": "usage",
+    "message": "Example error: provider_option_invalid.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `option_conflict`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "option_conflict",
+    "category": "usage",
+    "message": "Example error: option_conflict.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `large_batch_not_allowed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "large_batch_not_allowed",
+    "category": "usage",
+    "message": "Example error: large_batch_not_allowed.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `hard_limit_exceeded`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "hard_limit_exceeded",
+    "category": "usage",
+    "message": "Example error: hard_limit_exceeded.",
+    "exit_code": 2,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `config_not_found`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "config_not_found",
+    "category": "configuration",
+    "message": "Example error: config_not_found.",
+    "exit_code": 3,
+    "retryable": false,
+    "operation": "config"
+  }
+}
+```
+
+### `config_invalid`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "config_invalid",
+    "category": "configuration",
+    "message": "Example error: config_invalid.",
+    "exit_code": 3,
+    "retryable": false,
+    "operation": "config"
+  }
+}
+```
+
+### `config_insecure`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "config_insecure",
+    "category": "configuration",
+    "message": "Example error: config_insecure.",
+    "exit_code": 3,
+    "retryable": false,
+    "operation": "config"
+  }
+}
+```
+
+### `profile_not_found`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "profile_not_found",
+    "category": "configuration",
+    "message": "Example error: profile_not_found.",
+    "exit_code": 3,
+    "retryable": false,
+    "operation": "config"
+  }
+}
+```
+
+### `missing_environment_variable`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "missing_environment_variable",
+    "category": "configuration",
+    "message": "Example error: missing_environment_variable.",
+    "exit_code": 3,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `credentials_missing`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "credentials_missing",
+    "category": "configuration",
+    "message": "Example error: credentials_missing.",
+    "exit_code": 3,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `authentication_failed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "authentication_failed",
+    "category": "configuration",
+    "message": "Example error: authentication_failed.",
+    "exit_code": 3,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `authorization_failed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "authorization_failed",
+    "category": "configuration",
+    "message": "Example error: authorization_failed.",
+    "exit_code": 3,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `endpoint_invalid`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "endpoint_invalid",
+    "category": "configuration",
+    "message": "Example error: endpoint_invalid.",
+    "exit_code": 3,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `secret_header_literal`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "secret_header_literal",
+    "category": "configuration",
+    "message": "Example error: secret_header_literal.",
+    "exit_code": 3,
+    "retryable": false,
+    "operation": "config"
+  }
+}
+```
+
+### `provider_rejected`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "provider_rejected",
+    "category": "provider_rejection",
+    "message": "Example error: provider_rejected.",
+    "exit_code": 4,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `provider_job_not_found`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "provider_job_not_found",
+    "category": "provider_rejection",
+    "message": "Example error: provider_job_not_found.",
+    "exit_code": 4,
+    "retryable": false,
+    "operation": "status"
+  }
+}
+```
+
+### `transport_failed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "transport_failed",
+    "category": "provider_availability",
+    "message": "Example error: transport_failed.",
+    "exit_code": 5,
+    "retryable": false,
+    "operation": "status"
+  }
+}
+```
+
+### `provider_unavailable`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "provider_unavailable",
+    "category": "provider_availability",
+    "message": "Example error: provider_unavailable.",
+    "exit_code": 5,
+    "retryable": false,
+    "operation": "status"
+  }
+}
+```
+
+### `provider_protocol_error`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "provider_protocol_error",
+    "category": "provider_availability",
+    "message": "Example error: provider_protocol_error.",
+    "exit_code": 5,
+    "retryable": false,
+    "operation": "status"
+  }
+}
+```
+
+### `result_stream_failed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "result_stream_failed",
+    "category": "provider_availability",
+    "message": "Example error: result_stream_failed.",
+    "exit_code": 5,
+    "retryable": false,
+    "operation": "results"
+  }
+}
+```
+
+### `cancellation_refresh_failed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "cancellation_refresh_failed",
+    "category": "provider_availability",
+    "message": "Example error: cancellation_refresh_failed.",
+    "exit_code": 5,
+    "retryable": false,
+    "operation": "cancel"
+  }
+}
+```
+
+### `results_not_ready`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "results_not_ready",
+    "category": "job_state",
+    "message": "Example error: results_not_ready.",
+    "exit_code": 6,
+    "retryable": false,
+    "operation": "results"
+  }
+}
+```
+
+### `job_failed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "job_failed",
+    "category": "job_state",
+    "message": "Example error: job_failed.",
+    "exit_code": 6,
+    "retryable": false,
+    "operation": "wait"
+  }
+}
+```
+
+### `job_expired`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "job_expired",
+    "category": "job_state",
+    "message": "Example error: job_expired.",
+    "exit_code": 6,
+    "retryable": false,
+    "operation": "wait"
+  }
+}
+```
+
+### `job_cancelled`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "job_cancelled",
+    "category": "job_state",
+    "message": "Example error: job_cancelled.",
+    "exit_code": 6,
+    "retryable": false,
+    "operation": "wait"
+  }
+}
+```
+
+### `completed_with_item_failures`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "completed_with_item_failures",
+    "category": "job_state",
+    "message": "Example error: completed_with_item_failures.",
+    "exit_code": 6,
+    "retryable": false,
+    "operation": "results"
+  }
+}
+```
+
+### `terminal_partial_results`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "terminal_partial_results",
+    "category": "job_state",
+    "message": "Example error: terminal_partial_results.",
+    "exit_code": 6,
+    "retryable": false,
+    "operation": "results"
+  }
+}
+```
+
+### `wait_timeout`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "wait_timeout",
+    "category": "wait_timeout",
+    "message": "Example error: wait_timeout.",
+    "exit_code": 7,
+    "retryable": false,
+    "operation": "wait"
+  }
+}
+```
+
+### `registry_unavailable`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "registry_unavailable",
+    "category": "local_state",
+    "message": "Example error: registry_unavailable.",
+    "exit_code": 8,
+    "retryable": false,
+    "operation": "registry"
+  }
+}
+```
+
+### `registry_schema_unsupported`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "registry_schema_unsupported",
+    "category": "local_state",
+    "message": "Example error: registry_schema_unsupported.",
+    "exit_code": 8,
+    "retryable": false,
+    "operation": "registry"
+  }
+}
+```
+
+### `registry_integrity_failed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "registry_integrity_failed",
+    "category": "local_state",
+    "message": "Example error: registry_integrity_failed.",
+    "exit_code": 8,
+    "retryable": false,
+    "operation": "registry"
+  }
+}
+```
+
+### `registry_write_failed_after_submit`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "registry_write_failed_after_submit",
+    "category": "local_state",
+    "message": "Example error: registry_write_failed_after_submit.",
+    "exit_code": 8,
+    "retryable": false,
+    "operation": "submit"
+  }
+}
+```
+
+### `local_job_not_found`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "local_job_not_found",
+    "category": "local_state",
+    "message": "Example error: local_job_not_found.",
+    "exit_code": 8,
+    "retryable": false,
+    "operation": "status"
+  }
+}
+```
+
+### `output_directory_invalid`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "output_directory_invalid",
+    "category": "local_state",
+    "message": "Example error: output_directory_invalid.",
+    "exit_code": 8,
+    "retryable": false,
+    "operation": "results"
+  }
+}
+```
+
+### `output_write_failed`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "output_write_failed",
+    "category": "local_state",
+    "message": "Example error: output_write_failed.",
+    "exit_code": 8,
+    "retryable": false,
+    "operation": "results"
+  }
+}
+```
+
+### `interrupted`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "interrupted",
+    "category": "interrupted",
+    "message": "Example error: interrupted.",
+    "exit_code": 130,
+    "retryable": false,
+    "operation": "wait"
+  }
+}
+```
+
+### `terminated`
+
+{/* prettier-ignore */}
+```json
+{
+  "schema_version": 1,
+  "type": "error",
+  "error": {
+    "code": "terminated",
+    "category": "terminated",
+    "message": "Example error: terminated.",
+    "exit_code": 143,
+    "retryable": false,
+    "operation": "wait"
+  }
+}
+```

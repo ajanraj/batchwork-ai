@@ -1,0 +1,141 @@
+---
+title: Command-line interface
+description: Install, submit, monitor, recover, and automate provider-native batches.
+---
+
+The installed `batchwork` command operates one provider-native batch at a time. It exposes the same canonical text, embedding, and image request models as the Python API; it is not a scheduler or multi-batch workflow engine.
+
+## Installation
+
+```console
+uv tool install batchwork-ai
+batchwork --version
+```
+
+For an approved one-shot invocation:
+
+```console
+uvx --from batchwork-ai batchwork --help
+```
+
+Batchwork requires Python 3.11 or newer. Help, version, and shell completion do not require a configuration file, registry, or credentials.
+
+## Human quick start
+
+Each non-whitespace line in text input becomes one prompt:
+
+```console
+export OPENAI_API_KEY="..."
+printf 'Summarize the release notes.\nClassify this support request.\n' > prompts.txt
+
+batchwork submit text prompts.txt --model openai/gpt-5
+batchwork list
+batchwork status BW_RECORD_ID
+batchwork wait BW_RECORD_ID --timeout 2h
+batchwork results BW_RECORD_ID
+```
+
+Use the immutable `bw_...` record ID printed by submission for durable automation. A local name is a convenience alias, not canonical identity.
+
+## Agent quick start
+
+Global controls are root-only and must precede the command:
+
+```console
+batchwork --jsonl --quiet run text requests.jsonl \
+  --model openai/gpt-5
+```
+
+Capture stdout, stderr, and the process exit status separately. stdout contains only requested data. stderr contains progress, diagnostics, and one structured error envelope. Validate `schema_version == 1` and dispatch on `type`; do not parse human prose.
+
+For streaming `run`, retain the first `job` envelope immediately. If incremental complete lines are unavailable, use bounded `--json` `submit`, then `wait`, then `results`; do not build a polling or retry loop around the CLI.
+
+## Command selection
+
+| Goal | Command | Network or mutation behavior |
+| --- | --- | --- |
+| Create and return | `submit {text,embeddings,images} SOURCE` | One provider submission |
+| Create through retrieval | `run {text,embeddings,images} SOURCE` | Submit → wait → results |
+| Observe once | `status JOB` | One safe status refresh |
+| Wait locally | `wait JOB` | Polls safe reads until terminal/timeout |
+| Retrieve once | `results JOB` | One refresh, then one terminal retrieval |
+| Cancel | `cancel JOB` | At most one cancellation request |
+| Inspect local jobs | `list` | Registry only; no provider scan |
+| Remove local metadata | `forget JOB` | Never changes remote work |
+| Preview/commit cleanup | `prune --older-than DURATION [--yes]` | Local records only |
+| Inspect config | `config {path,validate,show}` | Never reads credential values |
+| Check/reset registry | `registry check`, `registry reset --backup` | Local continuity only |
+
+`run` emits accepted identity before waiting. Timeout, interruption, termination, broken pipe, output failure, and registry failure never cancel the provider job.
+
+## Selectors
+
+Lifecycle `JOB` accepts:
+
+- a case-sensitive local alias;
+- immutable local record ID `bw_` plus 32 lowercase hexadecimal characters;
+- direct `provider:provider-job-id`;
+- a bare provider job ID with command-local `--provider`.
+
+Never infer provider, endpoint, account, or credential variable from an ID. Registered jobs retain an immutable non-secret routing fingerprint and use their persisted route by default. Direct operations bypass registry mutation. `--save` adopts a successful direct operation; `--name` requires `--save`.
+
+If local continuity is unavailable, direct provider references remain usable. Preserve `routing_fingerprint` from machine output for route-complete unregistered identity.
+
+## Input formats
+
+Creation accepts one regular file or `-` for stdin:
+
+- `json`: one canonical request object or non-empty array;
+- `jsonl`: one canonical request object per non-empty line;
+- `csv`: documented scalar fields only;
+- `text`: one prompt/value per non-whitespace line.
+
+Known extensions select a format. stdin and unknown extensions require `--format`; Batchwork never sniffs content. JSON and JSONL map directly to `BatchRequest`, `BatchEmbeddingRequest`, or `BatchImageRequest`. The entire source is parsed, normalized, and validated before provider work. Errors identify JSON index, JSONL line, CSV row/column, or text line.
+
+Explicit `custom_id` values are preserved. Missing IDs become `request-0`, `request-1`, and so on. Duplicate and explicit/generated collisions fail locally. Correlate results by `custom_id`, never output order.
+
+Recognized structured media paths resolve from the source file's parent, or the current directory for stdin, and are frozen during preflight. Path handling never rewrites ordinary prompts, tool arguments, image prompts, or provider options.
+
+## Defaults and provider options
+
+Modality flags are batch defaults beneath non-null per-record canonical values:
+
+- Text: `--system`, `--max-output-tokens`, sampling/penalty controls, repeatable `--stop`, literal `--tool-choice`, and `--endpoint`.
+- Embeddings: `--dimensions`.
+- Images: `--n`, `--aspect-ratio`, `--seed`, and `--size`.
+
+Use repeatable `--batch-metadata KEY=VALUE` only for non-secret provider-retained metadata. Provider option keys are exact and case-sensitive. Inline `--provider-options` accepts the selected provider's inner JSON object; prefer `--provider-options-file` for nested values. Command options form a shallow base and record keys win. Unknown keys fail except Together's documented passthrough; canonical/provider collisions always fail.
+
+The soft volume gate requires explicit `--allow-large-batch` above 10,000 requests, 50 MiB serialized upload, or 100 requested images. It does not bypass hard package/provider limits.
+
+## Output modes
+
+`--human`, `--json`, and `--jsonl` are mutually exclusive root options. Without one, interactive stdout selects human output; redirected bounded commands select JSON; redirected `run` and `results` select JSONL. Agents and scripts should always choose explicitly.
+
+Human output keeps selectors copyable and suppresses vectors, inline image data, complete signed URLs, provider bodies, and secrets. `--quiet` suppresses progress and non-essential warnings, never errors. `--progress` may force wait/run progress on redirected stderr.
+
+Machine output uses schema version 1, snake_case keys, UTC timestamps, finite JSON numbers, and lossless provider-owned nested JSON. See [CLI machine schema](/docs/reference/cli-machine-schema) for the generated schema and a credential-free example of every envelope/error.
+
+## Exits
+
+Stable process categories are: 0 success, 1 internal, 2 usage/input/preflight, 3 configuration/credentials, 4 provider rejection, 5 provider availability/protocol, 6 unsuccessful job/item state, 7 local wait timeout, 8 local state/output, 130 interruption, and 143 termination. See [CLI machine errors](/docs/guides/cli-exits) for every symbolic code.
+
+`status` exits 0 when observation succeeds regardless of job outcome. `wait` exits 0 only for completed. `results` can emit useful complete items and then exit 6.
+
+## Recovery
+
+Never automatically retry a failed command. In particular, do not retry submission, upload, batch creation, cancellation, registry mutation, or an acceptance-ambiguous operation. `error.retryable` means a later invocation may be safe after conditions change; it does not authorize a loop.
+
+When `submission_outcome` is `unknown`, do not blindly resubmit because duplicate provider cost is possible. When acceptance succeeded but registry insertion failed, Batchwork emits the direct provider reference before the local-state error; resume through that reference and adopt later only with explicit `--save`.
+
+After partial JSONL output, preserve complete records and replay from the beginning only when directed. Deduplicate by canonical job identity plus `custom_id`.
+
+## Explicit image output
+
+Image results remain in machine output unless `--output-dir` is explicit:
+
+```console
+batchwork --json results BW_RECORD_ID --output-dir ./generated-images
+```
+
+The target must be absent or an empty non-symlink directory before remote work. Batchwork writes images and `manifest.json` atomically, never overwrites, and preserves completed files after later failure. Inline data wins over a returned URL. Downloads are bounded HTTPS fetches that never forward provider credentials or configured headers. See [Image generation](/docs/modalities/images).

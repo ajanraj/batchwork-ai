@@ -1,0 +1,100 @@
+---
+title: CLI configuration and registry
+description: OS paths, precedence, schema, route trust, privacy, cleanup, migration, and recovery.
+---
+
+The CLI uses one optional user-scoped TOML file for non-secret profiles and one private user-scoped SQLite registry for job continuity. It never discovers project configuration, walks parent directories, loads dotenv files, or stores resolved credentials.
+
+## Path precedence
+
+Configuration resolves in this order:
+
+1. root `--config PATH`;
+2. `BATCHWORK_CONFIG`;
+3. the OS user-config default.
+
+Registry resolves independently:
+
+1. root `--registry PATH`;
+2. `BATCHWORK_REGISTRY`;
+3. the OS user-data default.
+
+Use `batchwork --json config path` to inspect both effective paths. The default config may be absent. A command- or environment-selected config must exist and be readable.
+
+## OS defaults
+
+| Platform | Configuration | Registry |
+| --- | --- | --- |
+| Linux/Unix | `$XDG_CONFIG_HOME/batchwork/config.toml` or `~/.config/batchwork/config.toml` | `$XDG_DATA_HOME/batchwork/registry.sqlite3` or `~/.local/share/batchwork/registry.sqlite3` |
+| macOS | `~/Library/Application Support/batchwork/config.toml` | `~/Library/Application Support/batchwork/registry.sqlite3` |
+| Windows | `%APPDATA%\batchwork\config.toml` | `%LOCALAPPDATA%\batchwork\registry.sqlite3` |
+
+On POSIX, config must be a regular non-symlink file owned by the current user and not writable by group or others.
+
+## Configuration schema
+
+Every present file requires `schema_version = 1`. Unknown keys and wrong types fail closed.
+
+```toml
+schema_version = 1
+default_profile = "work"
+
+[profiles.work.models]
+text = "openai/gpt-5"
+embeddings = "openai/text-embedding-3-small"
+images = "openai/gpt-image-1"
+
+[profiles.work.providers.openai]
+api_key_env = "WORK_OPENAI_API_KEY"
+base_url = "https://gateway.example.com/v1"
+
+[profiles.work.providers.openai.headers]
+X-Application = "batchwork-cli"
+
+[profiles.work.providers.openai.header_env]
+X-Gateway-Authorization = "WORK_GATEWAY_AUTHORIZATION"
+```
+
+Profiles contain only modality model defaults and per-provider `api_key_env`, `base_url`, non-secret `headers`, and secret `header_env` references. They do not contain request defaults, provider-option dictionaries, output defaults, retries, hooks, or model aliases.
+
+Profile selection for creation/direct operations is root `--profile`, `BATCHWORK_PROFILE`, configured `default_profile`, then none. For a local selector, persisted route identity is sticky; an explicit profile must produce a compatible fingerprint before network access.
+
+## Credentials and headers
+
+Configuration stores environment-variable names, never secret values. A selected variable that is missing or empty fails rather than falling through. Standard credential names are listed on [Configuration](/docs/configuration).
+
+Literal header names are case-insensitive for replacement. Known sensitive names such as Authorization, Cookie, Proxy-Authorization, `X-Api-Key`, and `Api-Key` are rejected as literals. Put all secret-bearing headers in `header_env`, including unrecognized vendor headers that carry secrets. `config validate` and `config show` do not resolve credential values.
+
+## Endpoint trust
+
+Custom `base_url` values receive provider credentials, configured headers, prompts, media, and workload metadata. Trust and authorize that destination as if it were the provider. URLs must be absolute HTTPS, except HTTP loopback development, and cannot contain userinfo, query, or fragment. A valid path prefix is preserved.
+
+## Registry privacy
+
+The registry stores only:
+
+- immutable local record ID and optional alias;
+- provider job ID and normalized provider reference;
+- immutable routing fingerprint and non-secret route descriptor;
+- optional modality, model, and profile label;
+- normalized state, request counts, and timestamps.
+
+It never stores prompts, request bodies, media, results, raw provider payloads, secret values, input paths, or complete argv. `list` reads cached local rows and never scans provider accounts.
+
+Registry uniqueness is provider, provider job ID, and routing fingerprint. The same provider job ID may be recorded separately for distinct gateways/accounts. Aliases are case-sensitive and globally unique; immutable generated IDs remain canonical machine selectors.
+
+## Cleanup
+
+`forget JOB` removes one local row and never changes remote work. `prune --older-than 30d` previews terminal rows with `terminal_at < cutoff`; equality does not qualify. Add `--yes` to commit the exact local cleanup. Status filters are ORed and all other list filters are ANDed. There is no automatic expiry.
+
+## Migration and backup
+
+SQLite uses `user_version`, WAL, a bounded busy timeout, short transactions, and constraints. Supported forward migrations run transactionally only after creating a consistent backup. Newer unsupported schemas and integrity/open failures fail closed. Provider network I/O never occurs while holding a registry write transaction.
+
+Run `batchwork --json registry check` to inspect schema and integrity. Recovery reset requires `registry reset --backup`; Batchwork preserves the database and WAL/SHM sidecars as one recovery set before creating a fresh registry. If preservation fails, no reset occurs.
+
+## Direct-reference recovery
+
+The registry is not required for unregistered lifecycle work. Use `provider:provider-job-id` with explicit route options when local continuity is unavailable. Direct operations bypass registry lookup and mutation. After a successful direct operation, `--save` may adopt the job under a new immutable record; optional `--name` is atomic and requires `--save`.
+
+If a local record's route conflicts with an explicitly selected profile, do not rebind it. Use a direct reference with the intended route and save a distinct record. If provider acceptance succeeds but local insertion fails, machine output emits direct identity before the error; preserve it and stop rather than resubmitting.

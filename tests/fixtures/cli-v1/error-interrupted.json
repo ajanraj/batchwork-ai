@@ -1,1 +1,1 @@
-{"schema_version":1,"type":"error","error":{"code":"interrupted","category":"interrupted","message":"Example error: interrupted.","exit_code":130,"retryable":false,"operation":"status"}}
+{"schema_version":1,"type":"error","error":{"code":"interrupted","category":"interrupted","message":"Example error: interrupted.","exit_code":130,"retryable":false,"operation":"wait"}}

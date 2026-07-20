@@ -1,1 +1,1 @@
-{"schema_version":1,"type":"error","error":{"code":"completed_with_item_failures","category":"job_state","message":"Example error: completed_with_item_failures.","exit_code":6,"retryable":false,"operation":"status"}}
+{"schema_version":1,"type":"error","error":{"code":"completed_with_item_failures","category":"job_state","message":"Example error: completed_with_item_failures.","exit_code":6,"retryable":false,"operation":"results"}}

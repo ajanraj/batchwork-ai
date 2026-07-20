@@ -37,6 +37,34 @@ export OPENAI_API_KEY="..."
 
 See [Configuration](https://batchwork.ajanraj.com/docs/configuration) for every provider credential, endpoint override, model format, and batch limit.
 
+### Command-line tool
+
+Install the standalone command with `uv tool`:
+
+```bash
+uv tool install batchwork-ai
+batchwork --version
+```
+
+Human quick start:
+
+```bash
+batchwork submit text prompts.txt --model openai/gpt-5
+batchwork list
+batchwork status BW_RECORD_ID
+batchwork results BW_RECORD_ID
+```
+
+Agent and automation quick start:
+
+```bash
+batchwork --jsonl --quiet run text requests.jsonl --model openai/gpt-5
+```
+
+Machine output uses schema version 1. Global controls such as `--jsonl`, `--profile`, and `--quiet` precede the command. Preserve the first emitted job identity, capture stdout/stderr/exit status separately, and never retry an acceptance-ambiguous submission automatically. Image files are written only when `--output-dir` is explicit.
+
+See the [CLI guide](https://batchwork.ajanraj.com/docs/cli), [configuration and registry reference](https://batchwork.ajanraj.com/docs/reference/cli-configuration-registry), [machine schema](https://batchwork.ajanraj.com/docs/reference/cli-machine-schema), and [exit catalog](https://batchwork.ajanraj.com/docs/guides/cli-exits).
+
 ## Quickstart
 
 ```python

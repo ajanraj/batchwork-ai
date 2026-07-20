@@ -47,6 +47,8 @@ async with Batchwork() as client:
 
 Groq-specific options include `parallelToolCalls`, `reasoningFormat`, `reasoningEffort`, and `serviceTier`. Assistant `ReasoningPart` content is emitted as Groq’s `reasoning` field. Common messages, function tools, tool choice, and request settings use the OpenAI-compatible chat shape. Unsupported arbitrary Groq options are not passed through.
 
+Exact CLI text provider-option keys are `parallelToolCalls`, `reasoningEffort`, `reasoningFormat`, `serviceTier`, and `user`. Only `chat-completions` is a valid explicit `--endpoint`. Unknown keys fail locally; `parallelToolCalls` must be boolean and the remaining keys are strings. Canonical `top_k` is unsupported. Batch metadata is supported and forwarded. Package hard bounds are 50,000 requests, 20 MiB per serialized request, and 200 MiB aggregate, subject to lower Groq/model limits.
+
 ## Image input
 
 Groq text batches can consume supported image inputs. Other file media types are rejected during serialization. “Image generation: No” means Groq is not exposed through `batch_images()`; it does not mean vision input is unavailable.

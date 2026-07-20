@@ -70,6 +70,21 @@ See the [provider overview](/docs/providers) for accepted input media and native
 
 When both Google key variables are present, `GOOGLE_GENERATIVE_AI_API_KEY` takes precedence.
 
+## CLI profiles and local continuity
+
+The command-line tool keeps non-secret user profiles in a schema-v1 TOML file and route-complete job identity in a private metadata-only SQLite registry. Inspect both effective paths with:
+
+```console
+batchwork --json config path
+batchwork --json config validate
+batchwork --json config show
+batchwork --json registry check
+```
+
+CLI profile selection is root `--profile`, `BATCHWORK_PROFILE`, configured default, then none. Credentials and secret headers remain environment-only. Registered jobs retain immutable routing data so ambient configuration cannot silently move an existing job to another account or gateway.
+
+See [CLI configuration and registry](/docs/reference/cli-configuration-registry) for the exact TOML schema, OS paths, precedence, endpoint trust boundary, privacy, cleanup, migration, backup, and direct-reference recovery.
+
 ## Credential precedence
 
 API keys and base URLs resolve in this order:

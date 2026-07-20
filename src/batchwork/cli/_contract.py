@@ -35,6 +35,7 @@ from batchwork.types import (
 SCHEMA_VERSION = 1
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_PATH = REPOSITORY_ROOT / "docs/public/schemas/batchwork-cli-v1.schema.json"
+DOC_PATH = REPOSITORY_ROOT / "docs/docs/reference/cli-machine-schema.mdx"
 FIXTURE_DIRECTORY = REPOSITORY_ROOT / "tests/fixtures/cli-v1"
 
 Modality: TypeAlias = Literal["text", "embeddings", "images"]
@@ -166,6 +167,54 @@ ERROR_CODE_CATEGORIES: Final[dict[KnownErrorCode, ErrorCategory]] = {
     "terminated": "terminated",
 }
 CANONICAL_ERROR_CODES: Final[tuple[KnownErrorCode, ...]] = tuple(ERROR_CODE_CATEGORIES)
+ERROR_EXAMPLE_OPERATIONS: Final[dict[KnownErrorCode, str]] = {
+    "internal_error": "cli",
+    "usage_error": "cli",
+    "invalid_job_selector": "status",
+    "input_read_failed": "submit",
+    "input_parse_failed": "submit",
+    "input_validation_failed": "submit",
+    "duplicate_custom_id": "submit",
+    "unsupported_modality": "submit",
+    "unsupported_setting": "submit",
+    "provider_option_invalid": "submit",
+    "option_conflict": "submit",
+    "large_batch_not_allowed": "submit",
+    "hard_limit_exceeded": "submit",
+    "config_not_found": "config",
+    "config_invalid": "config",
+    "config_insecure": "config",
+    "profile_not_found": "config",
+    "missing_environment_variable": "submit",
+    "credentials_missing": "submit",
+    "authentication_failed": "submit",
+    "authorization_failed": "submit",
+    "endpoint_invalid": "submit",
+    "secret_header_literal": "config",
+    "provider_rejected": "submit",
+    "provider_job_not_found": "status",
+    "transport_failed": "status",
+    "provider_unavailable": "status",
+    "provider_protocol_error": "status",
+    "result_stream_failed": "results",
+    "cancellation_refresh_failed": "cancel",
+    "results_not_ready": "results",
+    "job_failed": "wait",
+    "job_expired": "wait",
+    "job_cancelled": "wait",
+    "completed_with_item_failures": "results",
+    "terminal_partial_results": "results",
+    "wait_timeout": "wait",
+    "registry_unavailable": "registry",
+    "registry_schema_unsupported": "registry",
+    "registry_integrity_failed": "registry",
+    "registry_write_failed_after_submit": "submit",
+    "local_job_not_found": "status",
+    "output_directory_invalid": "results",
+    "output_write_failed": "results",
+    "interrupted": "wait",
+    "terminated": "wait",
+}
 
 
 def _validate_error_code(value: KnownErrorCode) -> KnownErrorCode:
@@ -589,7 +638,13 @@ def _foundation_envelopes() -> dict[str, Envelope]:
                 records_emitted=1,
                 recovery=Recovery(
                     action="resume_with_direct_reference",
-                    command=["batchwork", "status", "openai:batch_example"],
+                    command=[
+                        "batchwork",
+                        "status",
+                        "openai:batch_example",
+                        "--api-key-env",
+                        "EXAMPLE_OPENAI_API_KEY",
+                    ],
                 ),
             )
         ),
@@ -656,7 +711,7 @@ def _error_fixture_envelopes() -> dict[str, ErrorEnvelope]:
                 message=f"Example error: {code}.",
                 exit_code=EXIT_CODE_BY_CATEGORY[ERROR_CODE_CATEGORIES[code]],
                 retryable=False,
-                operation="status",
+                operation=ERROR_EXAMPLE_OPERATIONS[code],
             )
         )
         for code in CANONICAL_ERROR_CODES
@@ -669,8 +724,90 @@ def fixture_documents() -> dict[str, str]:
     return {name: serialize_envelope(envelope) for name, envelope in envelopes.items()}
 
 
+def reference_document() -> str:
+    """Render the public schema reference from the typed fixture catalog."""
+    fixtures = fixture_documents()
+    foundation_names = tuple(_foundation_envelopes())
+    lines = [
+        "---",
+        "title: CLI machine schema",
+        "description: Generated schema-v1 envelopes and credential-free examples.",
+        "---",
+        "",
+        "This page is generated from Batchwork's typed machine-output models. "
+        "Do not edit it by hand. The normative JSON Schema is available at "
+        "[`/schemas/batchwork-cli-v1.schema.json`](/schemas/batchwork-cli-v1.schema.json).",
+        "",
+        "Every machine record uses `schema_version: 1` and a discriminating `type`. "
+        "Consumers must reject unknown schema versions, may ignore additive fields, and "
+        "must read primary data from stdout and the single structured error from stderr.",
+        "",
+        "## Successful envelopes",
+        "",
+    ]
+    for name in foundation_names:
+        if name == "error.json":
+            continue
+        document = json.dumps(json.loads(fixtures[name]), ensure_ascii=False, indent=2)
+        envelope_type = json.loads(fixtures[name])["type"]
+        lines.extend(
+            [
+                f"### `{envelope_type}`",
+                "",
+                f"Credential-free fixture: `tests/fixtures/cli-v1/{name}`.",
+                "",
+                "{/* prettier-ignore */}",
+                "```json",
+                document,
+                "```",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Error envelope",
+            "",
+            "Expected machine failures write exactly one `error` envelope to stderr. "
+            "`error.code` is the stable recovery key; `message` is explanatory text.",
+            "",
+            "### Accepted but not recorded",
+            "",
+            "This representative fixture preserves direct provider identity after remote "
+            "acceptance and local registry failure.",
+            "",
+            "{/* prettier-ignore */}",
+            "```json",
+            json.dumps(json.loads(fixtures["error.json"]), ensure_ascii=False, indent=2),
+            "```",
+            "",
+            "## Error-code examples",
+            "",
+            "Each stable error code below has its own credential-free fixture generated from "
+            "the same typed catalog.",
+            "",
+        ]
+    )
+    for code in CANONICAL_ERROR_CODES:
+        name = f"error-{code}.json"
+        lines.extend(
+            [
+                f"### `{code}`",
+                "",
+                "{/* prettier-ignore */}",
+                "```json",
+                json.dumps(json.loads(fixtures[name]), ensure_ascii=False, indent=2),
+                "```",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def contract_drift() -> list[Path]:
-    expected = {SCHEMA_PATH: schema_document()}
+    expected = {
+        SCHEMA_PATH: schema_document(),
+        DOC_PATH: reference_document(),
+    }
     expected.update(
         {FIXTURE_DIRECTORY / name: document for name, document in fixture_documents().items()}
     )
@@ -688,7 +825,9 @@ def contract_drift() -> list[Path]:
 
 def write_contract_artifacts() -> None:
     SCHEMA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DOC_PATH.parent.mkdir(parents=True, exist_ok=True)
     FIXTURE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     SCHEMA_PATH.write_text(schema_document())
+    DOC_PATH.write_text(reference_document())
     for name, document in fixture_documents().items():
         (FIXTURE_DIRECTORY / name).write_text(document)

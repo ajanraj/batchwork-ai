@@ -70,6 +70,12 @@ xAI options include log probabilities, reasoning effort/summary, storage, includ
 
 Text inputs can include images plus supported file URLs and provider file IDs. Inline images are supported; inline generic file data is not serialized as an xAI input file.
 
+## CLI capability contract
+
+Only `responses` is a valid explicit text `--endpoint`. Exact text request-root option keys are `include`, `logprobs`, `previousResponseId`, `reasoningEffort`, `reasoningSummary`, `store`, and `topLogprobs`. `include` is an array, `store` is boolean, `logprobs` is boolean or a non-negative integer, and `topLogprobs` is an integer from 0 through 8. Canonical frequency/presence penalties, stop sequences, and `top_k` are unsupported.
+
+Exact image option keys are `aspect_ratio`, `output_format`, `quality`, `resolution`, `sync_mode`, and `user`. Provider `aspect_ratio` collides with canonical `aspect_ratio`. Generic image `seed` and `size` are unsupported. Unknown keys and invalid values fail local preflight. CLI batch metadata is unsupported. Package hard bounds are 50,000 requests, 20 MiB per request, and 200 MiB aggregate, subject to lower xAI/model limits.
+
 ## Results
 
 Text results normalize output text and usage. Image normalization accepts `data`, a `url`, or both. The serializer requests base64-oriented image output, but provider-returned URLs may be signed and short-lived; consume them promptly.

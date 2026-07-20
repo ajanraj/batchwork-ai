@@ -1,1 +1,1 @@
-{"schema_version":1,"type":"error","error":{"code":"job_expired","category":"job_state","message":"Example error: job_expired.","exit_code":6,"retryable":false,"operation":"status"}}
+{"schema_version":1,"type":"error","error":{"code":"job_expired","category":"job_state","message":"Example error: job_expired.","exit_code":6,"retryable":false,"operation":"wait"}}

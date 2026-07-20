@@ -90,6 +90,18 @@ Google generation settings are nested under `generationConfig`. Provider options
 
 Gemma models receive system text prepended to the first user message rather than `systemInstruction`. Gemini 3 has distinct mixed-tool and thought-signature behavior.
 
+## CLI capability contract
+
+Google uses native APIs; the OpenAI-style `--endpoint` values do not apply. Exact text request-root provider-option keys are:
+
+`audioTimestamp`, `cachedContent`, `imageConfig`, `labels`, `mediaResolution`, `responseModalities`, `retrievalConfig`, `safetySettings`, `serviceTier`, and `thinkingConfig`.
+
+Exact embedding keys are `content`, `outputDimensionality`, `taskType`, and `title`. Canonical `dimensions` maps to `outputDimensionality`; specifying both is a collision. Supported `taskType` values are provider-defined retrieval, semantic-similarity, classification, clustering, question-answering, and fact-verification task types. `content` is a complex list with one entry per input value.
+
+Exact image keys are `googleSearch`, `imageConfig`, `mediaResolution`, `responseModalities`, and `thinkingConfig`. `imageConfig.aspectRatio` collides with canonical `aspect_ratio`. `imageConfig.imageSize` accepts `1K`, `2K`, or `4K`; `responseModalities` must contain `IMAGE` and optional `TEXT`. Canonical image `size` is unsupported and `n` is limited to exactly 1.
+
+Unknown keys and basic shape/value errors fail locally. CLI batch metadata is unsupported. The inline serialized upload limit is 20 MiB, lower than the package's 200 MiB aggregate ceiling when applicable.
+
 ## Media and result limits
 
 Only HTTPS Gemini Files URLs under the configured provider origin and supported YouTube URLs pass directly. Other remote media is downloaded and inlined through the configured media resolver.
