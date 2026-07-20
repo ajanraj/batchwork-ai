@@ -32,7 +32,14 @@ from ._text_validation import (
     _validate_text_preflight,
 )
 from ._typing import is_string_mapping
-from .errors import BatchworkError, UnsupportedProviderError, _LimitExceededError
+from .errors import (
+    BatchworkError,
+    UnsupportedProviderError,
+    _LimitExceededError,
+    _OptionConflictError,
+    _ProviderOptionError,
+    _UnsupportedSettingError,
+)
 from .types import BatchLimits, BatchProvider, ModelKind
 
 
@@ -50,6 +57,19 @@ _EMBEDDING_PROVIDERS = frozenset(
     {BatchProvider.OPENAI, BatchProvider.GOOGLE, BatchProvider.MISTRAL}
 )
 _IMAGE_PROVIDERS = frozenset({BatchProvider.OPENAI, BatchProvider.GOOGLE, BatchProvider.XAI})
+_GOOGLE_EMBEDDING_TASK_TYPES = frozenset(
+    {
+        "TASK_TYPE_UNSPECIFIED",
+        "RETRIEVAL_QUERY",
+        "RETRIEVAL_DOCUMENT",
+        "SEMANTIC_SIMILARITY",
+        "CLASSIFICATION",
+        "CLUSTERING",
+        "QUESTION_ANSWERING",
+        "FACT_VERIFICATION",
+        "CODE_RETRIEVAL_QUERY",
+    }
+)
 
 
 def _anthropic_capabilities(model_id: str) -> tuple[int, bool, bool, bool]:
@@ -130,6 +150,32 @@ def _assigned(requests: Sequence[Request]) -> list[tuple[str, dict[str, object]]
         seen.add(custom_id)
         assigned.append((custom_id, item))
     return assigned
+
+
+def _validate_embedding_option_values(
+    provider: BatchProvider, options: Mapping[str, object]
+) -> None:
+    dimension_key = "dimensions" if provider is BatchProvider.OPENAI else "outputDimensionality"
+    if dimension_key in options:
+        dimensions = options[dimension_key]
+        if not isinstance(dimensions, int) or isinstance(dimensions, bool) or dimensions < 1:
+            raise _ProviderOptionError(
+                f'batchwork: provider option "{dimension_key}" must be a positive integer.'
+            )
+    if provider is BatchProvider.OPENAI and "user" in options:
+        if not isinstance(options["user"], str):
+            raise _ProviderOptionError('batchwork: provider option "user" must be a string.')
+    if provider is BatchProvider.GOOGLE:
+        if "taskType" in options and options["taskType"] not in _GOOGLE_EMBEDDING_TASK_TYPES:
+            raise _ProviderOptionError(
+                'batchwork: provider option "taskType" is not a supported embedding task type.'
+            )
+        if "title" in options and not isinstance(options["title"], str):
+            raise _ProviderOptionError('batchwork: provider option "title" must be a string.')
+        if "content" in options and not isinstance(options["content"], list):
+            raise _ProviderOptionError(
+                'batchwork: provider option "content" must be a list with one entry per value.'
+            )
 
 
 def _chat_body_options(provider: BatchProvider, options: Mapping[str, object]) -> dict[str, object]:
@@ -1010,6 +1056,9 @@ def build_embedding_bodies(
     model_id: str,
     requests: Sequence[Request],
     limits: BatchLimits | None = None,
+    defaults: Request | None = None,
+    *,
+    strict: bool = False,
 ) -> list[BuiltRequest]:
     if provider not in _EMBEDDING_PROVIDERS:
         raise UnsupportedProviderError(
@@ -1018,9 +1067,44 @@ def build_embedding_bodies(
             "Embeddings are supported for: openai, mistral, google.",
         )
     validate_request_count(requests, limits)
+    base = _mapping(defaults)
     built: list[BuiltRequest] = []
-    for custom_id, item in _assigned(requests):
+    for custom_id, request in _assigned(requests):
+        item = {**base, **{key: value for key, value in request.items() if value is not None}}
+        merged_options = {
+            **_provider_options(base, provider),
+            **_provider_options(request, provider),
+        }
+        if merged_options:
+            item.pop("providerOptions", None)
+            item["provider_options"] = {provider.value: merged_options}
         options = _provider_options(item, provider)
+        dimensions = item.get("dimensions")
+        if dimensions is not None and provider is BatchProvider.MISTRAL:
+            raise _UnsupportedSettingError(
+                'batchwork: provider "mistral" does not support canonical setting "dimensions".'
+            )
+        dimension_option = (
+            "dimensions" if provider is BatchProvider.OPENAI else "outputDimensionality"
+        )
+        if dimensions is not None and dimension_option in options:
+            raise _OptionConflictError(
+                f'batchwork: canonical setting "dimensions" conflicts with provider option '
+                f'"{dimension_option}".'
+            )
+        if strict:
+            allowed = {
+                BatchProvider.OPENAI: {"dimensions", "user"},
+                BatchProvider.GOOGLE: {"content", "outputDimensionality", "taskType", "title"},
+                BatchProvider.MISTRAL: set(),
+            }[provider]
+            unknown = sorted(set(options) - allowed)
+            if unknown:
+                raise _ProviderOptionError(
+                    f'batchwork: provider option "{unknown[0]}" is not supported for '
+                    f"{provider.value} embeddings."
+                )
+            _validate_embedding_option_values(provider, options)
         value = item.get("value")
         if not isinstance(value, str):
             raise BatchworkError("batchwork: embedding request value must be a string.")
@@ -1043,6 +1127,8 @@ def build_embedding_bodies(
             for key in ("outputDimensionality", "taskType", "title"):
                 if options.get(key) is not None:
                     body[key] = options[key]
+            if dimensions is not None:
+                body["outputDimensionality"] = dimensions
             endpoint = f"/v1beta/models/{model_id}:embedContent"
         else:
             body = {"model": model_id, "input": [value], "encoding_format": "float"}
@@ -1050,6 +1136,8 @@ def build_embedding_bodies(
                 for key in ("dimensions", "user"):
                     if options.get(key) is not None:
                         body[key] = options[key]
+                if dimensions is not None:
+                    body["dimensions"] = dimensions
             endpoint = "/v1/embeddings"
         _validate_size(custom_id, body, limits)
         built.append(BuiltRequest(body=body, custom_id=custom_id, endpoint=endpoint))

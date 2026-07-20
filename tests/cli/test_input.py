@@ -7,7 +7,7 @@ import click
 import pytest
 
 import batchwork.cli._input as input_module
-from batchwork.cli._input import load_text_requests
+from batchwork.cli._input import load_embedding_requests, load_text_requests
 
 
 def _write_source(tmp_path: Path, name: str, contents: bytes) -> Path:
@@ -49,6 +49,40 @@ def test_load_text_requests_accepts_utf8_bom_and_explicit_stdin_format() -> None
     )
 
     assert requests[0].prompt == "hello"
+
+
+@pytest.mark.parametrize(
+    ("name", "contents", "values"),
+    (
+        ("embeddings.json", b'{"value":"one","dimensions":32}', ["one"]),
+        ("embeddings.jsonl", b'{"value":"one"}\n{"value":"two"}\n', ["one", "two"]),
+        ("embeddings.csv", b"value,dimensions\none,32\ntwo,\n", ["one", "two"]),
+        ("embeddings.txt", b"  one  \n\ntwo\n", ["  one  ", "two"]),
+    ),
+)
+def test_load_embedding_requests_accepts_all_transports(
+    tmp_path: Path,
+    name: str,
+    contents: bytes,
+    values: list[str],
+) -> None:
+    requests = load_embedding_requests(_write_source(tmp_path, name, contents), None)
+
+    assert [request.value for request in requests] == values
+    assert [request.custom_id for request in requests] == [
+        f"request-{index}" for index in range(len(requests))
+    ]
+
+
+def test_load_embedding_requests_rejects_whole_source_with_coordinates(tmp_path: Path) -> None:
+    source = _write_source(
+        tmp_path,
+        "embeddings.jsonl",
+        b'{"value":"one"}\n{"value":"two","dimensions":0}\n',
+    )
+
+    with pytest.raises(click.UsageError, match="JSONL line 2"):
+        load_embedding_requests(source, None)
 
 
 @pytest.mark.parametrize("name", ("requests.data", "requests"))

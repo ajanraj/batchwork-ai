@@ -6,6 +6,8 @@ from pydantic import ValidationError
 import batchwork
 from batchwork.types import (
     AssistantMessage,
+    BatchEmbeddingDefaults,
+    BatchEmbeddingRequest,
     BatchImage,
     BatchProvider,
     BatchRef,
@@ -37,6 +39,16 @@ def test_request_requires_exactly_one_input() -> None:
         BatchRequest()
     with pytest.raises(ValidationError, match="exactly one"):
         BatchRequest(prompt="hello", messages=[UserMessage(content="world")])
+
+
+def test_embedding_settings_are_typed_and_additive() -> None:
+    request = BatchEmbeddingRequest(value="hello", dimensions=256)
+    defaults = BatchEmbeddingDefaults(dimensions=128)
+
+    assert request.dimensions == 256
+    assert defaults.dimensions == 128
+    with pytest.raises(ValidationError):
+        BatchEmbeddingRequest(value="hello", dimensions=0)
 
 
 def test_content_union_validates_unknown_discriminator() -> None:

@@ -42,7 +42,7 @@ job = await client.batch_embeddings(
 )
 ```
 
-Mistral embedding provider options are currently ignored.
+Mistral does not support canonical `dimensions`. Python keeps its prior non-strict behavior for unknown Mistral embedding provider options; CLI submission rejects them before upload.
 
 ## Lifecycle
 

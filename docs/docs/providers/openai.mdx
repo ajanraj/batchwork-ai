@@ -53,11 +53,13 @@ from batchwork import BatchEmbeddingRequest
 
 job = await client.batch_embeddings(
     model="openai/text-embedding-3-small",
-    requests=[BatchEmbeddingRequest(custom_id="doc-1", value="Document text")],
+    requests=[
+        BatchEmbeddingRequest(custom_id="doc-1", value="Document text", dimensions=256)
+    ],
 )
 ```
 
-Use `provider_options={"openai": {"dimensions": 256}}` to request a supported reduced dimension.
+Use canonical `dimensions` to request a supported reduced width. The OpenAI-specific `user` field remains available through `provider_options`.
 
 ## Image generation
 

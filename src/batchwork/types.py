@@ -423,10 +423,17 @@ class BatchRequest(BatchRequestSettings):
 BatchDefaults = BatchRequestSettings
 
 
-class BatchEmbeddingRequest(BatchworkModel):
+class BatchEmbeddingRequestSettings(BatchworkModel):
+    dimensions: int | None = Field(default=None, ge=1)
+    provider_options: ProviderOptions | None = None
+
+
+class BatchEmbeddingRequest(BatchEmbeddingRequestSettings):
     value: str
     custom_id: str | None = None
-    provider_options: ProviderOptions | None = None
+
+
+BatchEmbeddingDefaults = BatchEmbeddingRequestSettings
 
 
 class BatchImageRequest(BatchworkModel):
@@ -606,7 +613,9 @@ __all__ = [
     "AssistantContentPart",
     "AssistantMessage",
     "BatchDefaults",
+    "BatchEmbeddingDefaults",
     "BatchEmbeddingRequest",
+    "BatchEmbeddingRequestSettings",
     "BatchImage",
     "BatchImageDefaults",
     "BatchImageRequest",

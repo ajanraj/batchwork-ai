@@ -46,7 +46,7 @@ String models require `provider/model` form. `gemini` aliases `google`, and `tog
 ## Requests and configuration
 
 - `BatchRequest` accepts exactly one of `prompt` or `messages`, plus generation settings inherited from `BatchRequestSettings` (`BatchDefaults`).
-- `BatchEmbeddingRequest` contains `value`, optional `custom_id`, and provider options.
+- `BatchEmbeddingRequest` extends `BatchEmbeddingRequestSettings` with `value` and optional `custom_id`. Embedding settings include canonical optional `dimensions` and provider options; `BatchEmbeddingDefaults` applies those settings only when a request omits them.
 - `BatchImageRequest` and `BatchImageDefaults` configure provider-supported image batches.
 - `ProviderCredentials` contains an API key, base URL, and headers.
 - `BatchLimits` bounds request count, serialized request bytes, and upload bytes.

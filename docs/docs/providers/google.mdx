@@ -43,15 +43,16 @@ job = await client.batch_embeddings(
         BatchEmbeddingRequest(
             custom_id="doc-1",
             value="Document text",
+            dimensions=256,
             provider_options={
-                "google": {"outputDimensionality": 256, "taskType": "RETRIEVAL_DOCUMENT"}
+                "google": {"taskType": "RETRIEVAL_DOCUMENT"}
             },
         )
     ],
 )
 ```
 
-Batchwork moves output dimensionality, task type, and title into Google’s `embedContentConfig` for the batch.
+Batchwork maps canonical `dimensions` to output dimensionality and moves it with task type and title into Google’s `embedContentConfig` for the batch.
 
 ## Image generation
 

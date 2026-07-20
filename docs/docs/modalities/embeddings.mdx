@@ -28,25 +28,55 @@ async with Batchwork() as client:
     }
 ```
 
-Each request contains one `value`. Results expose the vector through `result.embedding`.
+Each request contains one `value`. Results expose the vector through `result.embedding`. Use `dimensions` on a request or `BatchEmbeddingDefaults` for providers that support a reduced width:
+
+```python
+from batchwork import BatchEmbeddingDefaults
+
+job = await client.batch_embeddings(
+    model="openai/text-embedding-3-small",
+    requests=[
+        BatchEmbeddingRequest(value="Uses the batch default"),
+        BatchEmbeddingRequest(value="Overrides the default", dimensions=512),
+    ],
+    defaults=BatchEmbeddingDefaults(dimensions=256),
+)
+```
+
+Record values override defaults. OpenAI and Google support canonical `dimensions`; Mistral rejects it before submission.
+
+## CLI
+
+```sh
+batchwork submit embeddings requests.jsonl \
+  --model openai/text-embedding-3-small \
+  --dimensions 256
+
+batchwork run embeddings values.txt \
+  --format text \
+  --model google/gemini-embedding-001
+```
+
+JSON and JSONL map directly to `BatchEmbeddingRequest`. CSV accepts `value`, `custom_id`, and `dimensions`; text maps each non-whitespace line to one `value`. Missing IDs are generated as `request-0`, `request-1`, and so on. Human results show vector dimensions without printing vectors; JSON and JSONL preserve the complete vectors.
 
 ## Provider coverage
 
 | Provider | Submission | Results | Notes |
 | --- | --- | --- | --- |
-| OpenAI | JSONL file through `/v1/embeddings` | Output/error JSONL files | Supports dimensions through OpenAI provider options. |
+| OpenAI | JSONL file through `/v1/embeddings` | Output/error JSONL files | Supports canonical dimensions and the `user` provider option. |
 | Google | Inline `:asyncBatchEmbedContent` operation | Inline response | Supports output dimensionality, task type, and title. |
-| Mistral | JSONL file and Batch Job | Output/error JSONL files | Embedding provider options are currently ignored. |
+| Mistral | JSONL file and Batch Job | Output/error JSONL files | Canonical dimensions and CLI provider options are unsupported. |
 
 Anthropic, Groq, Together AI, and xAI raise `UnsupportedProviderError` before network I/O.
 
-## OpenAI dimensions
+## OpenAI options
 
 ```python
 request = BatchEmbeddingRequest(
     custom_id="doc-1",
     value="Document text",
-    provider_options={"openai": {"dimensions": 256}},
+    dimensions=256,
+    provider_options={"openai": {"user": "tenant-1"}},
 )
 ```
 
@@ -56,9 +86,9 @@ request = BatchEmbeddingRequest(
 request = BatchEmbeddingRequest(
     custom_id="search-document",
     value="Document text",
+    dimensions=256,
     provider_options={
         "google": {
-            "outputDimensionality": 256,
             "taskType": "RETRIEVAL_DOCUMENT",
             "title": "Document title",
         }

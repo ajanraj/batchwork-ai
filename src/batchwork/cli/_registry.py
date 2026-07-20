@@ -23,7 +23,7 @@ from batchwork.types import (
     is_terminal_status,
 )
 
-from ._contract import Job
+from ._contract import Job, Modality
 
 _RECORD_ID = re.compile(r"^bw_[0-9a-f]{32}$")
 _JOB_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -410,6 +410,7 @@ def insert_job(
     route: RegistryRoute,
     snapshot: BatchSnapshot,
     registered_at: datetime,
+    modality: Modality = "text",
 ) -> Job:
     if name is not None and not is_job_name(name):
         raise ValueError("name must be shell-safe and cannot match a record ID")
@@ -423,7 +424,7 @@ def insert_job(
                 _job_values(
                     record_id=record_id,
                     name=name,
-                    modality="text",
+                    modality=modality,
                     model=model,
                     profile=profile,
                     route=route,
@@ -440,7 +441,7 @@ def insert_job(
         provider_job_id=snapshot.id,
         provider_reference=provider_reference,
         routing_fingerprint=route.fingerprint,
-        modality="text",
+        modality=modality,
         model=model,
         profile=profile,
         status=snapshot.status,
@@ -461,6 +462,7 @@ def adopt_job(
     route: RegistryRoute,
     snapshot: BatchSnapshot,
     registered_at: datetime,
+    modality: Modality | None = None,
 ) -> RegistryJob:
     if name is not None and not is_job_name(name):
         raise ValueError("name must be shell-safe and cannot match a record ID")
@@ -487,7 +489,8 @@ def adopt_job(
             counts = snapshot.request_counts
             connection.execute(
                 f"""
-                UPDATE jobs SET profile = COALESCE(?, profile), status = ?,
+                UPDATE jobs SET profile = COALESCE(?, profile),
+                    modality = COALESCE(modality, ?), status = ?,
                     request_total = ?, request_completed = ?, request_failed = ?,
                     provider_created_at = COALESCE(provider_created_at, ?),
                     completed_at = ?, expires_at = ?,
@@ -500,6 +503,7 @@ def adopt_job(
                 """,
                 (
                     profile,
+                    modality,
                     snapshot.status.value,
                     counts.total,
                     counts.completed,
@@ -527,7 +531,7 @@ def adopt_job(
                 _job_values(
                     record_id=record_id,
                     name=name,
-                    modality=None,
+                    modality=modality,
                     model=None,
                     profile=profile,
                     route=route,
