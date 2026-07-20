@@ -2,6 +2,12 @@
 
 All notable changes to `batchwork-ai` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [semantic versioning](https://semver.org/).
 
+## [0.2.1] - 2026-07-20
+
+### Fixed
+
+- Compressed provider responses (for example `Content-Encoding: gzip`) are no longer decompressed twice, which raised `httpx.DecodingError: incorrect header check` and made every affected request fail — including OpenAI file uploads during batch submission. The bounded response rebuild now drops the original `content-encoding` and `content-length` headers because the body is already decoded.
+
 ## [0.2.0] - 2026-07-20
 
 This release adds the installable `batchwork` command-line tool and the portable Agent Skill, so batches can be submitted and managed from the terminal, from scripts, and by coding agents without writing Python.
@@ -44,6 +50,7 @@ First release published to PyPI as `batchwork-ai`.
 
 Initial tagged version; superseded by 0.1.1 for the PyPI name change.
 
+[0.2.1]: https://github.com/ajanraj/batchwork-ai/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ajanraj/batchwork-ai/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/ajanraj/batchwork-ai/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ajanraj/batchwork-ai/releases/tag/v0.1.0
