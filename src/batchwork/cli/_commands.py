@@ -64,11 +64,13 @@ from ._lifecycle import (
     render_lifecycle_error,
     render_results,
     render_snapshot,
+    resolve_job,
     results_job,
     status_job,
     unsuccessful,
     wait_job,
 )
+from ._materialize import ImageMaterializer, prepare_output_directory
 from ._output import JsonResultSpool
 from ._registry import (
     CURRENT_SCHEMA_VERSION,
@@ -86,15 +88,19 @@ from ._state import OutputMode, RootOptions
 from ._submit_text import (
     SubmissionResult,
     SubmitEmbeddingOptions,
+    SubmitImageOptions,
     SubmitTextOptions,
     render_error,
     render_job,
 )
 from ._submit_text import submit_embeddings as execute_submit_embeddings
+from ._submit_text import submit_images as execute_submit_images
 from ._submit_text import submit_text as execute_submit_text
 
 CommandFunction = TypeVar("CommandFunction", bound=Callable[..., object])
-SubmitOptions = TypeVar("SubmitOptions", SubmitTextOptions, SubmitEmbeddingOptions)
+SubmitOptions = TypeVar(
+    "SubmitOptions", SubmitTextOptions, SubmitEmbeddingOptions, SubmitImageOptions
+)
 SubmitFunction = Callable[[RootOptions, SubmitOptions], Awaitable[SubmissionResult]]
 
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
@@ -601,8 +607,17 @@ def _run_submission(
     *,
     timeout: str | None,
     poll_interval: float | None,
+    output_dir: Path | None = None,
 ) -> None:
     mode = _output_mode(root, streaming=True)
+    materializer = (
+        ImageMaterializer(
+            prepare_output_directory(output_dir, operation="run"),
+            operation="run",
+        )
+        if output_dir is not None
+        else None
+    )
     spool: JsonResultSpool | None = None
     prepared_resolved: ResolvedJob | None = None
     records_emitted = 0
@@ -638,8 +653,19 @@ def _run_submission(
                 RunEnvelope(job=submission.job, snapshot=waited.snapshot, results=[])
             )
 
-        def emit_result(_resolved: ResolvedJob, item: BatchResult) -> None:
+        human_results: list[BatchResult] = []
+
+        async def emit_result(_resolved: ResolvedJob, item: BatchResult) -> None:
             nonlocal records_emitted
+            materialization = (
+                await materializer.materialize_result(
+                    waited.resolved.machine_job,
+                    waited.resolved.machine_fingerprint,
+                    item,
+                )
+                if materializer is not None
+                else None
+            )
             if mode is OutputMode.JSONL:
                 click.echo(
                     serialize_envelope(
@@ -647,6 +673,7 @@ def _run_submission(
                             job=waited.resolved.machine_job,
                             routing_fingerprint=waited.resolved.machine_fingerprint,
                             result=item,
+                            materialization=materialization,
                         )
                     ),
                     nl=False,
@@ -656,19 +683,36 @@ def _run_submission(
                 if spool is None:
                     raise RuntimeError("batchwork: JSON run spool was not prepared")
                 spool.append(item)
+            else:
+                human_results.append(item)
 
         def reset_buffer() -> None:
             if spool is not None:
                 spool.reset()
+            human_results.clear()
 
         collected = await results_job(
             root,
             lifecycle,
-            on_result=emit_result if mode in {OutputMode.JSON, OutputMode.JSONL} else None,
+            on_result=(
+                emit_result
+                if mode in {OutputMode.JSON, OutputMode.JSONL} or materializer is not None
+                else None
+            ),
             on_retry=reset_buffer if mode is OutputMode.JSON else None,
             output_is_streaming=mode is OutputMode.JSONL,
             initial_records_emitted=records_emitted if mode is OutputMode.JSONL else 0,
+            restart_after_result=materializer is None,
         )
+        if mode is OutputMode.HUMAN and materializer is not None:
+            collected = LifecycleResult(
+                collected.resolved,
+                collected.snapshot,
+                human_results,
+                collected.item_failed,
+                collected.item_successes,
+                collected.item_failures,
+            )
         return waited, collected
 
     try:
@@ -704,6 +748,8 @@ def _run_submission(
         if spool is None:
             raise RuntimeError("batchwork: JSON run spool was not prepared")
         try:
+            if materializer is not None:
+                spool.set_materialization(materializer.summary())
             spool.publish()
         except OSError as error:
             _fail_output(error, mode, "run", waited.resolved)
@@ -834,9 +880,51 @@ def submit_embeddings(
 @click.argument("source", type=click.Path(path_type=Path, dir_okay=False, allow_dash=True))
 @_creation_options
 @_image_options
-def submit_images(**_: object) -> None:
+@click.pass_obj
+def submit_images(
+    root: RootOptions,
+    source: Path,
+    model: str | None,
+    input_format: str | None,
+    name: str | None,
+    batch_metadata: tuple[str, ...],
+    provider_options: str | None,
+    provider_options_file: Path | None,
+    allow_large_batch: bool,
+    base_url: str | None,
+    api_key_env: str | None,
+    header: tuple[str, ...],
+    header_env: tuple[str, ...],
+    n: int | None,
+    aspect_ratio: str | None,
+    seed: int | None,
+    size: str | None,
+) -> None:
     """Submit canonical image requests from SOURCE."""
-    _foundation_only()
+    result = asyncio.run(
+        execute_submit_images(
+            root,
+            SubmitImageOptions(
+                source=source,
+                model=model,
+                input_format=input_format,
+                name=name,
+                batch_metadata=batch_metadata,
+                provider_options=provider_options,
+                provider_options_file=provider_options_file,
+                allow_large_batch=allow_large_batch,
+                base_url=base_url,
+                api_key_env=api_key_env,
+                header=header,
+                header_env=header_env,
+                n=n,
+                aspect_ratio=aspect_ratio,
+                seed=seed,
+                size=size,
+            ),
+        )
+    )
+    _show_submission(root, result)
 
 
 @cli.group(no_args_is_help=True)
@@ -966,9 +1054,55 @@ def run_embeddings(
 @_creation_options
 @_image_options
 @_wait_options
-def run_images(**_: object) -> None:
+@click.pass_obj
+def run_images(
+    root: RootOptions,
+    source: Path,
+    output_dir: Path | None,
+    model: str | None,
+    input_format: str | None,
+    name: str | None,
+    batch_metadata: tuple[str, ...],
+    provider_options: str | None,
+    provider_options_file: Path | None,
+    allow_large_batch: bool,
+    base_url: str | None,
+    api_key_env: str | None,
+    header: tuple[str, ...],
+    header_env: tuple[str, ...],
+    n: int | None,
+    aspect_ratio: str | None,
+    seed: int | None,
+    size: str | None,
+    timeout: str | None,
+    poll_interval: float | None,
+) -> None:
     """Run canonical image requests from SOURCE."""
-    _foundation_only()
+    _run_submission(
+        root,
+        SubmitImageOptions(
+            source=source,
+            model=model,
+            input_format=input_format,
+            name=name,
+            batch_metadata=batch_metadata,
+            provider_options=provider_options,
+            provider_options_file=provider_options_file,
+            allow_large_batch=allow_large_batch,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            header=header,
+            header_env=header_env,
+            n=n,
+            aspect_ratio=aspect_ratio,
+            seed=seed,
+            size=size,
+        ),
+        execute_submit_images,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        output_dir=output_dir,
+    )
 
 
 @cli.command()
@@ -1077,8 +1211,6 @@ def results(
     modality: Modality | None,
 ) -> None:
     """Retrieve available terminal results for JOB without waiting."""
-    if output_dir is not None:
-        raise click.UsageError("--output-dir is available for image jobs only.")
     mode = _output_mode(root, streaming=True)
     options = _lifecycle_options(
         job,
@@ -1092,10 +1224,28 @@ def results(
         modality,
         "results",
     )
+    if output_dir is not None:
+        if (":" in job or provider is not None) and modality != "images":
+            raise CliUsageError("--output-dir with a direct JOB requires --modality images.")
+        preview = resolve_job(root, options)
+        known_modality = (
+            preview.record.job.modality if preview.record is not None else options.modality
+        )
+        if known_modality is not None and known_modality != "images":
+            raise CliUsageError("--output-dir is available for image jobs only.")
+    materializer = (
+        ImageMaterializer(
+            prepare_output_directory(output_dir, operation="results"),
+            operation="results",
+        )
+        if output_dir is not None
+        else None
+    )
     spool: JsonResultSpool | None = None
     prepared_resolved: ResolvedJob | None = None
     records_emitted = 0
     retrieval_complete = False
+    human_results: list[BatchResult] = []
 
     def prepare_buffer(resolved: ResolvedJob, _snapshot: BatchSnapshot) -> None:
         nonlocal spool, prepared_resolved
@@ -1112,35 +1262,53 @@ def results(
     def reset_buffer() -> None:
         if spool is not None:
             spool.reset()
+        human_results.clear()
 
-    def emit_result(resolved: ResolvedJob, item: BatchResult) -> None:
+    async def emit_result(resolved: ResolvedJob, item: BatchResult) -> None:
         nonlocal records_emitted
+        materialization = (
+            await materializer.materialize_result(
+                resolved.machine_job,
+                resolved.machine_fingerprint,
+                item,
+            )
+            if materializer is not None
+            else None
+        )
         if mode is OutputMode.JSON:
             if spool is None:
                 raise RuntimeError("batchwork: JSON result spool was not prepared")
             spool.append(item)
-        else:
+        elif mode is OutputMode.JSONL:
             click.echo(
                 serialize_envelope(
                     ResultEnvelope(
                         job=resolved.machine_job,
                         routing_fingerprint=resolved.machine_fingerprint,
                         result=item,
+                        materialization=materialization,
                     )
                 ),
                 nl=False,
             )
             records_emitted += 1
+        else:
+            human_results.append(item)
 
     try:
         result = asyncio.run(
             results_job(
                 root,
                 options,
-                on_result=emit_result if mode in {OutputMode.JSON, OutputMode.JSONL} else None,
+                on_result=(
+                    emit_result
+                    if mode in {OutputMode.JSON, OutputMode.JSONL} or materializer is not None
+                    else None
+                ),
                 on_snapshot=prepare_buffer if mode is OutputMode.JSON else None,
                 on_retry=reset_buffer if mode is OutputMode.JSON else None,
                 output_is_streaming=mode is OutputMode.JSONL,
+                restart_after_result=materializer is None,
             )
         )
         retrieval_complete = True
@@ -1162,12 +1330,23 @@ def results(
         if spool is None:
             raise RuntimeError("batchwork: JSON result spool was not prepared")
         try:
+            if materializer is not None:
+                spool.set_materialization(materializer.summary())
             spool.publish()
         except OSError as error:
             _fail_output(error, mode, "results", result.resolved)
         finally:
             spool.close()
     elif mode is not OutputMode.JSONL:
+        if materializer is not None:
+            result = LifecycleResult(
+                result.resolved,
+                result.snapshot,
+                human_results,
+                result.item_failed,
+                result.item_successes,
+                result.item_failures,
+            )
         click.echo(render_results(result, mode), nl=False)
     _fail_unsuccessful(result, "results", mode)
 

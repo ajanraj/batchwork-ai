@@ -10,7 +10,13 @@ from pydantic import TypeAdapter
 
 from batchwork.types import BatchResult
 
-from ._contract import ResultEnvelope, ResultListEnvelope, RunEnvelope, serialize_envelope
+from ._contract import (
+    Materialization,
+    ResultEnvelope,
+    ResultListEnvelope,
+    RunEnvelope,
+    serialize_envelope,
+)
 
 _RESULTS_MARKER = '"results":[]'
 _RESULT_ADAPTER = TypeAdapter(BatchResult)
@@ -51,6 +57,10 @@ class JsonResultSpool:
         self._file.truncate()
         self._file.write(self._prefix)
         self._first = True
+
+    def set_materialization(self, materialization: Materialization) -> None:
+        encoded = materialization.model_dump_json(exclude_none=True)
+        self._suffix = f'],"materialization":{encoded}}}\n'
 
     def publish(self) -> None:
         self._file.write(self._suffix)

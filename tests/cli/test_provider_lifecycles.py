@@ -39,6 +39,14 @@ _EMBEDDING_CASES = (
     _ProviderCase("google", "text-embedding-test", "/v1beta"),
     _ProviderCase("mistral", "mistral-embed-test", "/v1"),
 )
+_IMAGE_CASES = (
+    _ProviderCase("openai", "gpt-image-test", "/v1"),
+    _ProviderCase("google", "gemini-image-test", "/v1beta"),
+    _ProviderCase("xai", "grok-image-test", "/v1"),
+)
+_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 def _installed_batchwork() -> str:
@@ -95,14 +103,36 @@ def _embedding_result_file() -> bytes:
     ).encode()
 
 
-def _xai_results() -> dict[str, object]:
+def _image_result_file() -> bytes:
+    return (
+        json.dumps(
+            {
+                "custom_id": "request-0",
+                "response": {
+                    "status_code": 200,
+                    "body": {
+                        "data": [{"b64_json": _PNG_BASE64}],
+                        "output_format": "png",
+                    },
+                },
+            }
+        )
+        + "\n"
+    ).encode()
+
+
+def _xai_results(*, image: bool = False) -> dict[str, object]:
     return {
         "results": [
             {
                 "batch_request_id": "request-0",
                 "batch_result": {
                     "response": {
-                        "chat_completion": {"choices": [{"message": {"content": "hello"}}]}
+                        ("image_response" if image else "chat_completion"): (
+                            {"data": [{"base64": _PNG_BASE64}]}
+                            if image
+                            else {"choices": [{"message": {"content": "hello"}}]}
+                        )
                     }
                 },
             }
@@ -125,7 +155,9 @@ def _anthropic_results() -> bytes:
     ).encode()
 
 
-def _google_snapshot(*, done: bool, embedding: bool = False) -> dict[str, object]:
+def _google_snapshot(
+    *, done: bool, embedding: bool = False, image: bool = False
+) -> dict[str, object]:
     return {
         "name": "batches/batch_123",
         "done": done,
@@ -145,6 +177,23 @@ def _google_snapshot(*, done: bool, embedding: bool = False) -> dict[str, object
                             "response": (
                                 {"embedding": {"values": [0.1, 0.2, 0.3]}}
                                 if embedding
+                                else {
+                                    "candidates": [
+                                        {
+                                            "content": {
+                                                "parts": [
+                                                    {
+                                                        "inlineData": {
+                                                            "data": _PNG_BASE64,
+                                                            "mimeType": "image/png",
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    ]
+                                }
+                                if image
                                 else {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}
                             ),
                         }
@@ -170,7 +219,7 @@ def _mistral_snapshot(*, completed: bool) -> dict[str, object]:
 
 @contextmanager
 def _provider_server(
-    case: _ProviderCase, *, embedding: bool = False
+    case: _ProviderCase, *, embedding: bool = False, image: bool = False
 ) -> Iterator[tuple[str, type[BaseHTTPRequestHandler]]]:
     class Handler(BaseHTTPRequestHandler):
         requests: ClassVar[list[tuple[str, str]]] = []
@@ -217,7 +266,7 @@ def _provider_server(
                     ),
                 }
             if case.provider == "google":
-                return _google_snapshot(done=completed, embedding=embedding)
+                return _google_snapshot(done=completed, embedding=embedding, image=image)
             if case.provider == "mistral":
                 return _mistral_snapshot(completed=completed)
             if case.provider == "xai":
@@ -282,14 +331,20 @@ def _provider_server(
                 if path == "/v1/batches/batch_123":
                     self._json(self._snapshot())
                 elif path == "/v1/batches/batch_123/results":
-                    self._json(_xai_results())
+                    self._json(_xai_results(image=image))
                 else:
                     self.send_error(404)
                 return
             if path == "/v1/batches/batch_123":
                 self._json(self._snapshot())
             elif path == "/v1/files/file-output/content":
-                self._jsonl(_embedding_result_file() if embedding else _result_file())
+                self._jsonl(
+                    _embedding_result_file()
+                    if embedding
+                    else _image_result_file()
+                    if image
+                    else _result_file()
+                )
             else:
                 self.send_error(404)
 
@@ -668,3 +723,96 @@ base_url = "{base_url}"
             "input_files": ["file-input"],
             "model": case.model,
         }
+
+
+@pytest.mark.parametrize("case", _IMAGE_CASES, ids=lambda case: case.provider)
+def test_installed_image_lifecycle_for_each_provider(
+    tmp_path: Path,
+    case: _ProviderCase,
+) -> None:
+    source = tmp_path / "images.jsonl"
+    source.write_text('{"prompt":"a red square"}\n')
+    output_dir = tmp_path / f"{case.provider}-images"
+    with _provider_server(case, image=True) as (base_url, handler):
+        ran = _run(
+            tmp_path,
+            "run",
+            "images",
+            str(source),
+            "--model",
+            f"{case.provider}/{case.model}",
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_PROVIDER_KEY",
+            "--poll-interval",
+            ".01",
+            "--output-dir",
+            str(output_dir),
+        )
+
+        assert ran.returncode == 0, ran.stderr
+        envelope = json.loads(ran.stdout)
+        assert envelope["job"]["modality"] == "images"
+        assert envelope["results"][0]["images"][0]["data"] == _PNG_BASE64
+        assert envelope["materialization"]["images"][0]["media_type"] == "image/png"
+        assert (output_dir / "manifest.json").is_file()
+        assert len(list(output_dir.glob("*.png"))) == 1
+
+        direct = [
+            envelope["job"]["provider_reference"],
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_PROVIDER_KEY",
+        ]
+        status = _run(tmp_path, "status", *direct)
+        waited = _run(tmp_path, "wait", *direct, "--poll-interval", ".01")
+        plain_results = _run(tmp_path, "results", *direct)
+        assert plain_results.returncode == 0, plain_results.stderr
+        assert not list(tmp_path.glob("manifest.json"))
+        assert not list(tmp_path.glob("*.png"))
+        result_dir = tmp_path / f"{case.provider}-results"
+        results = _run(
+            tmp_path,
+            "results",
+            *direct,
+            "--output-dir",
+            str(result_dir),
+            "--modality",
+            "images",
+        )
+
+    assert status.returncode == 0, status.stderr
+    assert waited.returncode == 0, waited.stderr
+    assert results.returncode == 0, results.stderr
+    assert json.loads(results.stdout)["results"][0]["images"][0]["data"] == _PNG_BASE64
+    assert (result_dir / "manifest.json").is_file()
+    assert not list(tmp_path.glob("*.png"))
+    if case.provider == "openai":
+        upload = next(body for path, body in handler.bodies if path == "/v1/files")
+        request = next(
+            json.loads(line) for line in upload.splitlines() if line.startswith(b'{"custom_id"')
+        )
+        assert request["url"] == "/v1/images/generations"
+        assert request["body"] == {
+            "model": case.model,
+            "prompt": "a red square",
+            "n": 1,
+            "response_format": "b64_json",
+        }
+    elif case.provider == "google":
+        path, body = next(
+            (path, body) for path, body in handler.bodies if path.endswith(":batchGenerateContent")
+        )
+        assert path == f"/v1beta/models/{case.model}:batchGenerateContent"
+        request = json.loads(body)["batch"]["input_config"]["requests"]["requests"][0]
+        assert request["metadata"] == {"key": "request-0"}
+        assert request["request"]["generationConfig"] == {"responseModalities": ["IMAGE"]}
+    else:
+        upload = next(body for path, body in handler.bodies if path == "/v1/files")
+        request = next(
+            json.loads(line) for line in upload.splitlines() if line.startswith(b'{"body"')
+        )
+        assert request["url"] == "/v1/images/generations"
+        assert request["body"]["response_format"] == "b64_json"

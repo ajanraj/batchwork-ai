@@ -865,6 +865,142 @@ def test_image_defaults_and_provider_specific_wire_shapes() -> None:
         )
 
 
+def test_image_strict_validation_rejects_capability_mismatches_and_collisions() -> None:
+    with pytest.raises(BatchworkError, match='canonical setting "aspect_ratio"'):
+        build_image_bodies(
+            BatchProvider.OPENAI,
+            "gpt-image-2",
+            [BatchImageRequest(prompt="cat", aspect_ratio="16:9")],
+            strict=True,
+        )
+    with pytest.raises(BatchworkError, match='provider option "aspect_ratio"'):
+        build_image_bodies(
+            BatchProvider.XAI,
+            "grok-imagine",
+            [
+                BatchImageRequest(
+                    prompt="cat",
+                    aspect_ratio="16:9",
+                    provider_options={"xai": {"aspect_ratio": "4:3"}},
+                )
+            ],
+            strict=True,
+        )
+    with pytest.raises(BatchworkError, match="at most 1 generated image"):
+        build_image_bodies(
+            BatchProvider.GOOGLE,
+            "gemini-image",
+            [BatchImageRequest(prompt="cats", n=2)],
+            strict=True,
+        )
+    with pytest.raises(BatchworkError, match='provider option "unknown"'):
+        build_image_bodies(
+            BatchProvider.OPENAI,
+            "gpt-image-2",
+            [
+                BatchImageRequest(
+                    prompt="cat",
+                    provider_options={"openai": {"unknown": True}},
+                )
+            ],
+            strict=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "image_request", "message"),
+    (
+        (
+            BatchProvider.OPENAI,
+            "dall-e-3",
+            BatchImageRequest(prompt="cat", size="1x1"),
+            "does not support image size",
+        ),
+        (
+            BatchProvider.GOOGLE,
+            "gemini-image",
+            BatchImageRequest(prompt="cat", aspect_ratio="999:1"),
+            "does not support image aspect_ratio",
+        ),
+        (
+            BatchProvider.XAI,
+            "grok-imagine",
+            BatchImageRequest(prompt="cat", aspect_ratio="999:1"),
+            "does not support image aspect_ratio",
+        ),
+    ),
+)
+def test_image_strict_validation_enforces_provider_capability_values(
+    provider: BatchProvider,
+    model: str,
+    image_request: BatchImageRequest,
+    message: str,
+) -> None:
+    with pytest.raises(BatchworkError, match=message):
+        build_image_bodies(provider, model, [image_request], strict=True)
+
+
+@pytest.mark.parametrize(
+    ("model", "options", "message"),
+    (
+        ("dall-e-3", {"background": "transparent"}, "not supported by OpenAI image model"),
+        ("dall-e-3", {"quality": "low"}, "must be one of"),
+        ("dall-e-2", {"style": "vivid"}, "not supported by OpenAI image model"),
+        ("gpt-image-2", {"style": "vivid"}, "not supported by OpenAI image model"),
+        ("gpt-image-2", {"quality": "hd"}, "must be one of"),
+    ),
+)
+def test_image_strict_validation_enforces_openai_model_options(
+    model: str,
+    options: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(BatchworkError, match=message):
+        build_image_bodies(
+            BatchProvider.OPENAI,
+            model,
+            [
+                BatchImageRequest(
+                    prompt="cat",
+                    provider_options={"openai": options},
+                )
+            ],
+            strict=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "options", "message"),
+    (
+        (BatchProvider.OPENAI, {"outputCompression": 101}, "between 0 and 100"),
+        (BatchProvider.OPENAI, {"quality": 1}, "must be a string"),
+        (BatchProvider.GOOGLE, {"imageConfig": []}, "must be an object"),
+        (BatchProvider.GOOGLE, {"responseModalities": ["TEXT"]}, "optional"),
+        (BatchProvider.GOOGLE, {"responseModalities": ["IMAGE", 42]}, "optional"),
+        (BatchProvider.GOOGLE, {"mediaResolution": "invalid"}, "not a supported Google value"),
+        (BatchProvider.XAI, {"sync_mode": "yes"}, "must be a boolean"),
+        (BatchProvider.XAI, {"quality": "invalid"}, "must be one of"),
+    ),
+)
+def test_image_strict_validation_rejects_invalid_provider_option_values(
+    provider: BatchProvider,
+    options: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(BatchworkError, match=message):
+        build_image_bodies(
+            provider,
+            "image-model",
+            [
+                BatchImageRequest(
+                    prompt="cat",
+                    provider_options={provider.value: options},
+                )
+            ],
+            strict=True,
+        )
+
+
 def test_unsupported_modalities_raise_specific_error() -> None:
     with pytest.raises(UnsupportedProviderError) as image_error:
         build_image_bodies(

@@ -17,7 +17,12 @@ from pydantic import TypeAdapter, ValidationError
 
 from batchwork._limits import MAX_PROVIDER_OPTIONS_BYTES
 from batchwork._text_validation import _text_endpoint_kind
-from batchwork.body import build_embedding_bodies, build_text_bodies, validate_request_count
+from batchwork.body import (
+    build_embedding_bodies,
+    build_image_bodies,
+    build_text_bodies,
+    validate_request_count,
+)
 from batchwork.client import Batchwork
 from batchwork.errors import (
     BatchworkError,
@@ -32,6 +37,7 @@ from batchwork.media import DefaultMediaResolver
 from batchwork.types import (
     BatchDefaults,
     BatchEmbeddingDefaults,
+    BatchImageDefaults,
     BatchLimits,
     BatchProvider,
     JsonValue,
@@ -69,7 +75,7 @@ from ._failures import (
     TerminationRequested,
     provider_failure,
 )
-from ._input import load_embedding_requests, load_text_requests
+from ._input import load_embedding_requests, load_image_requests, load_text_requests
 from ._registry import RegistryRoute, insert_job
 from ._state import OutputMode, RootOptions
 from ._volume import WorkloadVolume, require_large_batch_authorization
@@ -138,7 +144,27 @@ class SubmitEmbeddingOptions:
     dimensions: int | None
 
 
-_CommonSubmitOptions = SubmitTextOptions | SubmitEmbeddingOptions
+@dataclass(frozen=True, slots=True)
+class SubmitImageOptions:
+    source: Path
+    model: str | None
+    input_format: str | None
+    name: str | None
+    batch_metadata: Sequence[str]
+    provider_options: str | None
+    provider_options_file: Path | None
+    allow_large_batch: bool
+    base_url: str | None
+    api_key_env: str | None
+    header: Sequence[str]
+    header_env: Sequence[str]
+    n: int | None
+    aspect_ratio: str | None
+    seed: int | None
+    size: str | None
+
+
+_CommonSubmitOptions = SubmitTextOptions | SubmitEmbeddingOptions | SubmitImageOptions
 
 
 @dataclass(frozen=True, slots=True)
@@ -781,6 +807,105 @@ async def submit_embeddings(
         prepared=prepared,
         job=job,
         modality="embeddings",
+    )
+
+
+async def submit_images(
+    root: RootOptions,
+    options: SubmitImageOptions,
+) -> SubmissionResult:
+    """Validate, submit, and durably identify one image-generation batch."""
+    prepared = _prepare_submission(
+        root,
+        options,
+        modality="images",
+        endpoint=None,
+        metadata_providers=frozenset({BatchProvider.OPENAI}),
+    )
+    spec = prepared.spec
+    route = prepared.route
+    requests = load_image_requests(
+        options.source,
+        options.input_format,
+        stdin=click.get_binary_stream("stdin") if options.source == Path("-") else None,
+    )
+    try:
+        defaults = BatchImageDefaults(
+            n=options.n if options.n is not None else 1,
+            aspect_ratio=options.aspect_ratio,
+            provider_options=_provider_options(
+                spec.provider, options.provider_options, options.provider_options_file
+            ),
+            seed=options.seed,
+            size=options.size,
+        )
+    except ValidationError as error:
+        raise _usage(
+            f"Invalid image defaults: {error.errors(include_url=False)[0]['msg']}."
+        ) from error
+    limits = BatchLimits()
+    try:
+        validate_request_count(requests, limits)
+        built = build_image_bodies(
+            spec.provider,
+            spec.model_id,
+            requests,
+            defaults,
+            limits,
+            strict=True,
+        )
+    except _ProviderOptionError as error:
+        raise CliUsageError(str(error), code="provider_option_invalid") from error
+    except _OptionConflictError as error:
+        raise CliUsageError(str(error), code="option_conflict") from error
+    except _UnsupportedSettingError as error:
+        raise CliUsageError(str(error), code="unsupported_setting") from error
+    except _LimitExceededError as error:
+        raise CliUsageError(str(error), code="hard_limit_exceeded") from error
+    except (BatchworkError, ValueError) as error:
+        raise _usage(str(error)) from error
+    requested_images = sum(
+        request.n if request.n is not None else defaults.n for request in requests
+    )
+    require_large_batch_authorization(
+        WorkloadVolume(requests=len(built), generated_images=requested_images),
+        authorized=options.allow_large_batch,
+    )
+
+    def validate_upload_size(size: int) -> None:
+        require_large_batch_authorization(
+            WorkloadVolume(upload_bytes=size, generated_images=requested_images),
+            authorized=options.allow_large_batch,
+        )
+
+    submission_context = FailureContext(
+        operation="submit",
+        provider=spec.provider,
+        routing_fingerprint=route.registry.fingerprint,
+        profile=prepared.profile_name,
+    )
+
+    async def submit() -> BatchJob:
+        async with Batchwork() as client:
+            return await client._submit_image_batch(
+                model=spec,
+                requests=requests,
+                defaults=defaults,
+                metadata=_metadata(options.batch_metadata),
+                limits=limits,
+                api_key=route.api_key,
+                base_url=route.base_url,
+                headers=route.headers,
+                validate_upload=validate_upload_size,
+            )
+
+    job = await _submit_to_provider(submit, submission_context)
+    return _register_submission(
+        root,
+        name=options.name,
+        prepared=prepared,
+        job=job,
+        modality="images",
     )
 
 

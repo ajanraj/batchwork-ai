@@ -1150,6 +1150,8 @@ def build_image_bodies(
     requests: Sequence[Request],
     defaults: Request | None = None,
     limits: BatchLimits | None = None,
+    *,
+    strict: bool = False,
 ) -> list[BuiltRequest]:
     if provider not in _IMAGE_PROVIDERS:
         raise UnsupportedProviderError(
@@ -1161,11 +1163,22 @@ def build_image_bodies(
     base = _mapping(defaults)
     built: list[BuiltRequest] = []
     for custom_id, request in _assigned(requests):
-        item = {**base, **request}
+        item = {**base, **{key: value for key, value in request.items() if value is not None}}
+        merged_options = {
+            **_provider_options(base, provider),
+            **_provider_options(request, provider),
+        }
+        if merged_options:
+            item.pop("providerOptions", None)
+            item["provider_options"] = {provider.value: merged_options}
         prompt = item.get("prompt")
         if not isinstance(prompt, str):
             raise BatchworkError("batchwork: image request prompt must be a string.")
         options = _provider_options(item, provider)
+        if strict:
+            from .providers._image import validate_image_preflight
+
+            validate_image_preflight(provider, model_id, item, options)
         if provider == BatchProvider.GOOGLE:
             n = item.get("n", 1)
             if n not in (None, 1):
