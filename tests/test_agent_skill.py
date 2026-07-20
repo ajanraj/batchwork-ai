@@ -1,8 +1,10 @@
 import json
 import re
+import tomllib
 from pathlib import Path
 
-SKILL_ROOT = Path(__file__).parents[1] / "skills" / "batchwork-ai"
+ROOT = Path(__file__).parents[1]
+SKILL_ROOT = ROOT / "skills" / "batchwork-ai"
 SKILL_PATH = SKILL_ROOT / "SKILL.md"
 REFERENCE_NAMES = {
     "commands.md",
@@ -45,11 +47,13 @@ def test_skill_has_portable_shallow_structure() -> None:
 def test_skill_declares_exact_release_compatibility() -> None:
     text = SKILL_PATH.read_text()
     frontmatter = text.split("---", 2)[1]
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    major, minor, _patch = (int(part) for part in project["version"].split("."))
 
     assert "name: batchwork-ai" in frontmatter
     assert "license: MIT" in frontmatter
     assert 'version: "0.1.0"' in frontmatter
-    assert "Batchwork >=0.2,<0.3" in frontmatter
+    assert f"Batchwork >={major}.{minor},<{major}.{minor + 1}" in frontmatter
     assert "schema_version 1" in frontmatter
     assert "allowed-tools:" not in frontmatter
 
