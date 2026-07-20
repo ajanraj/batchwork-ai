@@ -120,6 +120,39 @@ async def test_materializer_rejects_unknown_bytes_declared_as_supported_image(
     assert not list(output.glob("*.png"))
 
 
+@pytest.mark.parametrize(
+    ("payload", "media_type", "extension"),
+    (
+        (b"\x89PNG\r\n\x1a\nnot-a-png", "image/png", "png"),
+        (b"BMnot-a-bitmap", "image/bmp", "bin"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_materializer_rejects_truncated_signature_prefixed_image(
+    tmp_path: Path,
+    payload: bytes,
+    media_type: str,
+    extension: str,
+) -> None:
+    output = prepare_output_directory(tmp_path / "images", operation="results")
+    materializer = ImageMaterializer(output, operation="results")
+    result = BatchResult(
+        custom_id="truncated",
+        status=BatchResultStatus.SUCCEEDED,
+        images=[
+            BatchImage(
+                data=base64.b64encode(payload).decode(),
+                media_type=media_type,
+            )
+        ],
+    )
+
+    with pytest.raises(CliFailure):
+        await materializer.materialize_result("bw_" + "a" * 32, None, result)
+
+    assert not list(output.glob(f"*.{extension}"))
+
+
 @pytest.mark.asyncio
 async def test_materializer_rejects_arbitrary_bytes_declared_as_unknown_image(
     tmp_path: Path,

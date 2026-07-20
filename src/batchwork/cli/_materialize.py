@@ -7,9 +7,11 @@ import binascii
 import hashlib
 import os
 import re
+import secrets
 import stat
 import tempfile
 import xml.etree.ElementTree as ElementTree
+import zlib
 from pathlib import Path
 
 from batchwork._limits import MAX_AGGREGATE_MEDIA_BYTES, MAX_DECODED_MEDIA_BYTES
@@ -59,6 +61,85 @@ _EXTENSIONS = {
     "image/webp": "webp",
 }
 FileIdentity = tuple[int, int]
+
+
+def _valid_png(data: bytes) -> bool:
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    offset = 8
+    saw_header = False
+    saw_data = False
+    while offset + 12 <= len(data):
+        length = int.from_bytes(data[offset : offset + 4], "big")
+        chunk_type = data[offset + 4 : offset + 8]
+        chunk_end = offset + 12 + length
+        if chunk_end > len(data):
+            return False
+        payload = data[offset + 8 : offset + 8 + length]
+        expected_crc = int.from_bytes(data[offset + 8 + length : chunk_end], "big")
+        if zlib.crc32(chunk_type + payload) & 0xFFFFFFFF != expected_crc:
+            return False
+        if not saw_header:
+            if chunk_type != b"IHDR" or length != 13:
+                return False
+            width = int.from_bytes(payload[:4], "big")
+            height = int.from_bytes(payload[4:8], "big")
+            if width == 0 or height == 0:
+                return False
+            saw_header = True
+        elif chunk_type == b"IDAT":
+            saw_data = True
+        elif chunk_type == b"IEND":
+            return length == 0 and saw_data and chunk_end == len(data)
+        offset = chunk_end
+    return False
+
+
+def _valid_jpeg(data: bytes) -> bool:
+    if len(data) < 4 or not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
+        return False
+    return (
+        any(
+            marker in data
+            for marker in (
+                b"\xff\xc0",
+                b"\xff\xc1",
+                b"\xff\xc2",
+                b"\xff\xc3",
+                b"\xff\xc5",
+                b"\xff\xc6",
+                b"\xff\xc7",
+                b"\xff\xc9",
+                b"\xff\xca",
+                b"\xff\xcb",
+                b"\xff\xcd",
+                b"\xff\xce",
+                b"\xff\xcf",
+            )
+        )
+        and b"\xff\xda" in data
+    )
+
+
+def _valid_gif(data: bytes) -> bool:
+    return (
+        len(data) >= 14
+        and data.startswith((b"GIF87a", b"GIF89a"))
+        and int.from_bytes(data[6:8], "little") > 0
+        and int.from_bytes(data[8:10], "little") > 0
+        and data.endswith(b";")
+    )
+
+
+def _valid_webp(data: bytes) -> bool:
+    return (
+        len(data) >= 20
+        and data.startswith(b"RIFF")
+        and data[8:12] == b"WEBP"
+        and int.from_bytes(data[4:8], "little") + 8 == len(data)
+        and data[12:16] in {b"VP8 ", b"VP8L", b"VP8X"}
+        and int.from_bytes(data[16:20], "little") <= len(data) - 20
+    )
 
 
 def _failure(
@@ -237,15 +318,19 @@ class ImageMaterializer:
         return f"{safe}--{custom_id_hash}--{index}.{extension}"
 
     def _extension(self, data: bytes, media_type: str) -> str:
-        detected: str | None = None
-        if data.startswith(b"\x89PNG\r\n\x1a\n"):
-            detected = "image/png"
-        elif data.startswith(b"\xff\xd8\xff"):
-            detected = "image/jpeg"
-        elif data.startswith((b"GIF87a", b"GIF89a")):
-            detected = "image/gif"
-        elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
-            detected = "image/webp"
+        detected = next(
+            (
+                detected_type
+                for detected_type, validator in (
+                    ("image/png", _valid_png),
+                    ("image/jpeg", _valid_jpeg),
+                    ("image/gif", _valid_gif),
+                    ("image/webp", _valid_webp),
+                )
+                if validator(data)
+            ),
+            None,
+        )
         if detected is not None:
             return _EXTENSIONS[detected]
         if media_type in _EXTENSIONS:
@@ -257,14 +342,27 @@ class ImageMaterializer:
         raise ValueError(f'provider returned invalid image media type "{media_type}"')
 
     def _valid_other_image(self, data: bytes, media_type: str) -> bool:
-        signatures = {
-            "image/bmp": (b"BM",),
-            "image/tiff": (b"II*\x00", b"MM\x00*"),
-            "image/x-icon": (b"\x00\x00\x01\x00",),
-            "image/vnd.microsoft.icon": (b"\x00\x00\x01\x00",),
-        }
-        if media_type in signatures:
-            return data.startswith(signatures[media_type])
+        if media_type == "image/bmp":
+            return (
+                len(data) >= 26
+                and data.startswith(b"BM")
+                and int.from_bytes(data[2:6], "little") == len(data)
+                and 14 <= int.from_bytes(data[10:14], "little") < len(data)
+                and 12 <= int.from_bytes(data[14:18], "little") <= len(data) - 14
+            )
+        if media_type == "image/tiff":
+            byte_order = "little" if data.startswith(b"II*\x00") else "big"
+            if not data.startswith((b"II*\x00", b"MM\x00*")) or len(data) < 8:
+                return False
+            first_directory = int.from_bytes(data[4:8], byte_order)
+            return 8 <= first_directory <= len(data) - 2
+        if media_type in {"image/x-icon", "image/vnd.microsoft.icon"}:
+            return (
+                len(data) >= 22
+                and data.startswith(b"\x00\x00\x01\x00")
+                and int.from_bytes(data[4:6], "little") > 0
+                and int.from_bytes(data[18:22], "little") < len(data)
+            )
         if media_type == "image/svg+xml":
             try:
                 root = ElementTree.fromstring(data)
@@ -272,11 +370,21 @@ class ImageMaterializer:
                 return False
             return root.tag.rsplit("}", 1)[-1].casefold() == "svg"
         if media_type in {"image/avif", "image/heic", "image/heif"}:
-            return (
-                len(data) >= 16
-                and data[4:8] == b"ftyp"
-                and any(brand in data[8:32] for brand in (b"avif", b"avis", b"heic", b"heif"))
-            )
+            offset = 0
+            boxes: set[bytes] = set()
+            while offset + 8 <= len(data):
+                size = int.from_bytes(data[offset : offset + 4], "big")
+                box_type = data[offset + 4 : offset + 8]
+                if size < 8 or offset + size > len(data):
+                    return False
+                boxes.add(box_type)
+                if box_type == b"ftyp" and not any(
+                    brand in data[offset + 8 : offset + size]
+                    for brand in (b"avif", b"avis", b"heic", b"heif")
+                ):
+                    return False
+                offset += size
+            return offset == len(data) and b"ftyp" in boxes and bool(boxes & {b"meta", b"mdat"})
         return False
 
     def _path_identity(self, path: Path) -> FileIdentity:
@@ -292,11 +400,42 @@ class ImageMaterializer:
             raise OSError("output directory changed after validation")
 
     def _unlink_if_identity(self, path: Path, identity: FileIdentity) -> None:
+        if os.name != "nt":
+            try:
+                directory = self._open_output_directory()
+            except OSError:
+                return
+            try:
+                metadata = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+                if (metadata.st_dev, metadata.st_ino) == identity:
+                    os.unlink(path.name, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            finally:
+                os.close(directory)
+            return
         try:
             if self._path_identity(path) == identity:
                 path.unlink()
         except FileNotFoundError:
             pass
+
+    def _open_output_directory(self) -> int:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(self.output_dir, flags)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or (metadata.st_dev, metadata.st_ino) != self._output_identity
+        ):
+            os.close(descriptor)
+            raise OSError("output directory changed after validation")
+        return descriptor
 
     def _atomic_write(
         self,
@@ -304,7 +443,15 @@ class ImageMaterializer:
         data: bytes,
         *,
         replace: bool = True,
+        expected_identity: FileIdentity | None = None,
     ) -> FileIdentity:
+        if os.name != "nt":
+            return self._atomic_write_at(
+                path.name,
+                data,
+                replace=replace,
+                expected_identity=expected_identity,
+            )
         self._validate_output_directory()
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=self.output_dir)
         try:
@@ -317,13 +464,12 @@ class ImageMaterializer:
                 metadata = os.fstat(stream.fileno())
                 identity = (metadata.st_dev, metadata.st_ino)
             self._validate_output_directory()
+            if expected_identity is not None and self._path_identity(path) != expected_identity:
+                raise OSError("output file changed before atomic replacement")
             if replace:
                 os.replace(temporary, path)
-            elif os.name == "nt":
-                os.rename(temporary, path)
             else:
-                os.link(temporary, path)
-                os.unlink(temporary)
+                os.rename(temporary, path)
             return identity
         finally:
             if descriptor >= 0:
@@ -332,6 +478,71 @@ class ImageMaterializer:
                 os.unlink(temporary)
             except FileNotFoundError:
                 pass
+
+    def _atomic_write_at(
+        self,
+        name: str,
+        data: bytes,
+        *,
+        replace: bool,
+        expected_identity: FileIdentity | None,
+    ) -> FileIdentity:
+        directory = self._open_output_directory()
+        temporary: str | None = None
+        descriptor = -1
+        try:
+            for _ in range(100):
+                candidate = f".{name}.{secrets.token_hex(8)}"
+                try:
+                    descriptor = os.open(
+                        candidate,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+                        0o600,
+                        dir_fd=directory,
+                    )
+                except FileExistsError:
+                    continue
+                temporary = candidate
+                break
+            if temporary is None:
+                raise OSError("could not allocate a unique output temporary file")
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+                metadata = os.fstat(stream.fileno())
+                identity = (metadata.st_dev, metadata.st_ino)
+            if expected_identity is not None:
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != expected_identity:
+                    raise OSError("output file changed before atomic replacement")
+            if replace:
+                os.replace(
+                    temporary,
+                    name,
+                    src_dir_fd=directory,
+                    dst_dir_fd=directory,
+                )
+            else:
+                os.link(
+                    temporary,
+                    name,
+                    src_dir_fd=directory,
+                    dst_dir_fd=directory,
+                )
+                os.unlink(temporary, dir_fd=directory)
+            temporary = None
+            return identity
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temporary is not None:
+                try:
+                    os.unlink(temporary, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+            os.close(directory)
 
     def _write_manifest(self) -> None:
         if self._job is None:
@@ -342,11 +553,9 @@ class ImageMaterializer:
             images=self.entries,
         )
         path = self.output_dir / "manifest.json"
-        if self._manifest_identity is not None:
-            if self._path_identity(path) != self._manifest_identity:
-                raise OSError("manifest changed after Batchwork created it")
         self._manifest_identity = self._atomic_write(
             path,
             serialize_envelope(manifest).encode("utf-8"),
             replace=self._manifest_identity is not None,
+            expected_identity=self._manifest_identity,
         )
