@@ -142,6 +142,10 @@ The base package does not import or require `upstash-redis`.
 - [Public API](https://batchwork.ajanraj.com/docs/api)
 - [FAQ](https://batchwork.ajanraj.com/docs/faq)
 
+## Built with Codex and GPT-5.6
+
+Batchwork was built entirely in the OpenAI Codex CLI with GPT-5.6 during [OpenAI Build Week](https://openai.devpost.com/) (July 2026). Codex planned the design through a decision interview, implemented the seven provider adapters across three modalities, hardened security through repeated review loops, verified everything against live provider APIs, and drove the PyPI and documentation releases. The full collaboration story, plus a self-contained demo project for judges, lives in [`hackathon/`](hackathon/README.md).
+
 ## License
 
 [MIT](https://opensource.org/licenses/MIT) © [Ajanraj](https://github.com/ajanraj)

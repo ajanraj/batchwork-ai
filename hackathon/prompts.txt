@@ -1,0 +1,4 @@
+Reply with one word: the capital of France.
+Reply with one word: the chemical symbol for gold.
+Reply with one short sentence: why do batch APIs cost less than synchronous APIs?
+Reply with one short sentence: what does a unified batch client save a developer from writing?
