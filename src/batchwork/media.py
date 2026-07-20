@@ -459,12 +459,22 @@ class DefaultMediaResolver:
             raise MediaResolutionError(
                 f'batchwork: local media path "{value}" could not be resolved'
             ) from error
+        descriptor: int | None = None
         try:
-            with resolved.open("rb") as stream:
-                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                    raise MediaResolutionError(
-                        f'batchwork: local media path "{value}" must be a readable regular file'
-                    )
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+            )
+            descriptor = os.open(resolved, flags)
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise MediaResolutionError(
+                    f'batchwork: local media path "{value}" must be a readable regular file'
+                )
+            stream = os.fdopen(descriptor, "rb")
+            descriptor = None
+            with stream:
                 data = stream.read(max_bytes + 1)
         except MediaResolutionError:
             raise
@@ -472,6 +482,9 @@ class DefaultMediaResolver:
             raise MediaResolutionError(
                 f'batchwork: local media path "{value}" must be a readable regular file'
             ) from error
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
         _validate_size(data, max_bytes)
         fallback, _ = mimetypes.guess_type(resolved.name)
         return ResolvedMedia(data, _validated_type(data, media_type, fallback))
