@@ -14,6 +14,7 @@ from typing import NoReturn, TypeVar
 
 import click
 
+from batchwork._text_validation import _TEXT_ENDPOINTS
 from batchwork.types import BatchProvider, BatchResult, BatchSnapshot, BatchStatus
 
 from ._config import API_KEY_ENV, ConfigError, load_config, registry_path, select_profile
@@ -423,10 +424,15 @@ def _creation_options(function: CommandFunction) -> CommandFunction:
             multiple=True,
             help="Provider batch metadata; do not include secrets.",
         ),
-        click.option("--provider-options", metavar="JSON_OBJECT"),
+        click.option(
+            "--provider-options",
+            metavar="JSON_OBJECT",
+            help="Selected-provider options; exact keys: https://batchwork.ajanraj.com/docs/providers/",
+        ),
         click.option(
             "--provider-options-file",
             type=click.Path(path_type=Path, dir_okay=False),
+            help="Read selected-provider options JSON; docs: https://batchwork.ajanraj.com/docs/providers/",
         ),
         click.option("--allow-large-batch", is_flag=True),
         click.option("--base-url", metavar="URL"),
@@ -456,9 +462,7 @@ def _text_options(function: CommandFunction) -> CommandFunction:
         ),
         click.option(
             "--endpoint",
-            type=click.Choice(
-                ["chat-completions", "responses", "completions"], case_sensitive=True
-            ),
+            type=click.Choice(_TEXT_ENDPOINTS, case_sensitive=True),
         ),
     )
     for option in reversed(options):

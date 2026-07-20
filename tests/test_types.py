@@ -135,4 +135,5 @@ def test_ref_provider_precedes_model() -> None:
     ref = BatchRef(id="batch_1", provider="xai", model="openai/gpt-5")
     assert provider_from_ref(ref) is BatchProvider.XAI
     assert resolve_model("gemini/gemini-2.5-pro").provider is BatchProvider.GOOGLE
+    assert resolve_model("togetherai/meta-llama/test").provider is BatchProvider.TOGETHER
     assert resolve_model("xai/grok-4").kind is ModelKind.RESPONSES

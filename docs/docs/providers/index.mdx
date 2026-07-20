@@ -17,6 +17,24 @@ Batchwork exposes one lifecycle across seven provider-native batch APIs. The pro
 | [Together AI](/docs/providers/together) | Yes | No | No |
 | [xAI](/docs/providers/xai) | Yes | No | Yes |
 
+## Provider options
+
+Pass options with `--provider-options` or `--provider-options-file`. Keys use the exact SDK-style camel-case spelling documented on each provider page. Batchwork merges only the selected provider branch; per-record non-null values override defaults with a shallow merge.
+
+OpenAI, Anthropic, Google, Groq, Mistral, and xAI reject unknown keys before provider upload. Together accepts trusted passthrough options but rejects fields reserved by the canonical request envelope. Canonical settings and provider options that control the same wire field fail as conflicts instead of silently overriding one another.
+
+Exact text option keys:
+
+- OpenAI common: `forceReasoning`, `logprobs`, `promptCacheKey`, `promptCacheRetention`, `safetyIdentifier`, `serviceTier`, `systemMessageMode`, `user`. Chat additionally accepts `logitBias`, `maxCompletionTokens`, `metadata`, `parallelToolCalls`, `prediction`, `reasoningEffort`, `store`, `textVerbosity`. Responses additionally accepts `allowedTools`, `contextManagement`, `conversation`, `include`, `instructions`, `maxToolCalls`, `metadata`, `parallelToolCalls`, `previousResponseId`, `reasoningEffort`, `reasoningSummary`, `store`, `textVerbosity`, `truncation`. Completions accepts `echo`, `logitBias`, `logprobs`, `suffix`, `user`.
+- Anthropic: `cacheControl`, `container`, `contextManagement`, `disableParallelToolUse`, `effort`, `fallbacks`, `inferenceGeo`, `mcpServers`, `metadata`, `speed`, `taskBudget`, `thinking`, `toolStreaming`.
+- Google: `audioTimestamp`, `cachedContent`, `imageConfig`, `labels`, `mediaResolution`, `responseModalities`, `retrievalConfig`, `safetySettings`, `serviceTier`, `thinkingConfig`.
+- Groq: `parallelToolCalls`, `reasoningEffort`, `reasoningFormat`, `serviceTier`, `user`.
+- Mistral: `documentImageLimit`, `documentPageLimit`, `parallelToolCalls`, `reasoningEffort`, `safePrompt`.
+- xAI: `include`, `logprobs`, `previousResponseId`, `reasoningEffort`, `reasoningSummary`, `store`, `topLogprobs`.
+- Together: provider-owned keys pass through except reserved `custom_id`, `customId`, `input`, `messages`, `model`, `prompt`, and `stream`.
+
+Treat these options as trusted configuration, not end-user input. Provider APIs remain authoritative for model-specific and evolving constraints; Batchwork validates only constraints it can decide locally before upload.
+
 This matrix describes generated output. Text requests can accept additional media inputs.
 
 ## Text-request input media

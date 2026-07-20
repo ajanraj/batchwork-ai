@@ -318,6 +318,57 @@ async def test_anthropic_rejects_cross_origin_results_url() -> None:
 
 
 @pytest.mark.asyncio
+async def test_anthropic_text_submit_uses_exact_batch_contract() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "batch_1",
+                "processing_status": "in_progress",
+                "request_counts": {"processing": 1},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        snapshot = await get_adapter(BatchProvider.ANTHROPIC, http_client=client).submit(
+            built=[
+                BuiltRequest(
+                    body={
+                        "model": "claude-test",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "max_tokens": 32,
+                    },
+                    custom_id="a",
+                    endpoint="/v1/messages",
+                )
+            ],
+            credentials=ProviderCredentials(api_key="secret"),
+            endpoint="/v1/messages",
+            model_id="claude-test",
+        )
+
+    assert snapshot.id == "batch_1"
+    assert captured[0].url.path == "/v1/messages/batches"
+    assert captured[0].headers["x-api-key"] == "secret"
+    assert captured[0].headers["anthropic-version"] == "2023-06-01"
+    assert json.loads(captured[0].content) == {
+        "requests": [
+            {
+                "custom_id": "a",
+                "params": {
+                    "model": "claude-test",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "max_tokens": 32,
+                },
+            }
+        ]
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("provider", "upload_path", "captured_endpoint"),
     [
@@ -363,6 +414,44 @@ async def test_openai_compatible_provider_specific_upload_and_line_shape(
     create = json.loads(requests[1].content)
     assert b'"url":"/v1/chat/completions"' in upload
     assert create["endpoint"] == "/v1/chat/completions"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider", [BatchProvider.OPENAI, BatchProvider.GROQ, BatchProvider.TOGETHER]
+)
+async def test_openai_compatible_lifecycle_uses_provider_route(provider: BatchProvider) -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "batch_1",
+                    "status": "completed",
+                    "request_counts": {"total": 1, "completed": 1, "failed": 0},
+                },
+            )
+        return httpx.Response(200, json={})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = get_adapter(provider, http_client=client)
+        credentials = ProviderCredentials(api_key="secret")
+        snapshot = await adapter.retrieve("batch_1", credentials)
+        await adapter.cancel("batch_1", credentials)
+
+    assert snapshot.status == "completed"
+    assert [request.url.path for request in captured] == [
+        ("/openai/v1/batches/batch_1" if provider is BatchProvider.GROQ else "/v1/batches/batch_1"),
+        (
+            "/openai/v1/batches/batch_1/cancel"
+            if provider is BatchProvider.GROQ
+            else "/v1/batches/batch_1/cancel"
+        ),
+    ]
+    assert all(request.headers["authorization"] == "Bearer secret" for request in captured)
 
 
 @pytest.mark.asyncio
@@ -726,6 +815,47 @@ async def test_google_embedding_submit_and_inline_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_google_text_submit_uses_native_batch_endpoint_and_headers() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={"name": "batches/1", "metadata": {"state": "JOB_STATE_PENDING"}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await get_adapter(BatchProvider.GOOGLE, http_client=client).submit(
+            built=[
+                BuiltRequest(
+                    body={
+                        "contents": [{"parts": [{"text": "hello"}]}],
+                        "generationConfig": {"temperature": 0.2},
+                    },
+                    custom_id="a",
+                    endpoint="/v1beta/models/gemini-test:generateContent",
+                )
+            ],
+            credentials=ProviderCredentials(api_key="secret"),
+            endpoint="/v1beta/models/gemini-test:generateContent",
+            model_id="gemini-test",
+        )
+
+    assert captured[0].url.path == "/v1beta/models/gemini-test:batchGenerateContent"
+    assert captured[0].headers["x-goog-api-key"] == "secret"
+    sent = json.loads(captured[0].content)
+    request = sent["batch"]["input_config"]["requests"]["requests"][0]
+    assert request == {
+        "metadata": {"key": "a"},
+        "request": {
+            "contents": [{"parts": [{"text": "hello"}]}],
+            "generationConfig": {"temperature": 0.2},
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_google_inline_submit_accepts_payload_at_provider_limit() -> None:
     requests: list[httpx.Request] = []
 
@@ -923,6 +1053,8 @@ async def test_mistral_job_shape_and_output_results() -> None:
                 200,
                 text='{"custom_id":"a","response":{"status_code":200,"body":{"choices":[{"text":"ok"}]}}}\n',
             )
+        if request.url.path == "/v1/batch/jobs/job_1/cancel":
+            return httpx.Response(200, json={})
         raise AssertionError(f"unexpected request: {request.url}")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -946,6 +1078,7 @@ async def test_mistral_job_shape_and_output_results() -> None:
         results = [
             item async for item in adapter.results("job_1", ProviderCredentials(api_key="secret"))
         ]
+        await adapter.cancel("job_1", ProviderCredentials(api_key="secret"))
 
     assert b'"body":{"input":["hello"],"encoding_format":"float"}' in requests[0].content
     create = json.loads(requests[1].content)
@@ -955,6 +1088,7 @@ async def test_mistral_job_shape_and_output_results() -> None:
         "model": "mistral",
     }
     assert results[0].text == "ok"
+    assert requests[-1].url.path == "/v1/batch/jobs/job_1/cancel"
 
 
 @pytest.mark.asyncio
@@ -1006,6 +1140,46 @@ async def test_xai_paginated_image_results_and_cancel() -> None:
     assert results[1].error is not None and results[1].error.message == "failed"
     assert any("pagination_token=next" in path for path in paths)
     assert paths[-1].endswith("/batches/batch_1:cancel")
+
+
+@pytest.mark.asyncio
+async def test_xai_text_submit_uploads_responses_jsonl_then_creates_batch() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        if request.url.path == "/v1/files":
+            return httpx.Response(200, json={"id": "file-in"})
+        if request.url.path == "/v1/batches":
+            return httpx.Response(
+                200,
+                json={
+                    "batch_id": "batch_1",
+                    "state": {"num_requests": 1, "num_pending": 1},
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        snapshot = await get_adapter(BatchProvider.XAI, http_client=client).submit(
+            built=[
+                BuiltRequest(
+                    body={"model": "grok-test", "input": "hello"},
+                    custom_id="a",
+                    endpoint="/v1/responses",
+                )
+            ],
+            credentials=ProviderCredentials(api_key="secret"),
+            endpoint="/v1/responses",
+            model_id="grok-test",
+        )
+
+    assert snapshot.id == "batch_1"
+    assert [request.url.path for request in captured] == ["/v1/files", "/v1/batches"]
+    assert all(request.headers["authorization"] == "Bearer secret" for request in captured)
+    assert b'"url":"/v1/responses"' in captured[0].content
+    assert b'"custom_id":"a"' in captured[0].content
+    assert json.loads(captured[1].content) == {"input_file_id": "file-in", "name": "batchwork"}
 
 
 @pytest.mark.asyncio

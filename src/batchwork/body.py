@@ -25,6 +25,12 @@ from ._serialization import (
     _tools,
     _xai_responses_input,
 )
+from ._text_validation import (
+    _merge_text_request,
+    _openai_reasoning_enabled,
+    _openai_supports_non_reasoning,
+    _validate_text_preflight,
+)
 from ._typing import is_string_mapping
 from .errors import BatchworkError, UnsupportedProviderError, _LimitExceededError
 from .types import BatchLimits, BatchProvider, ModelKind
@@ -168,7 +174,7 @@ def _chat_body_options(provider: BatchProvider, options: Mapping[str, object]) -
             },
         )
     if provider == BatchProvider.TOGETHER:
-        recognized = {"user", "reasoningEffort", "textVerbosity", "strictJsonSchema"}
+        recognized = {"user", "reasoningEffort", "textVerbosity"}
         result = {key: value for key, value in options.items() if key not in recognized}
         result.update(
             _mapped_options(
@@ -182,21 +188,6 @@ def _chat_body_options(provider: BatchProvider, options: Mapping[str, object]) -
         )
         return result
     return {}
-
-
-def _openai_is_reasoning_model(model_id: str) -> bool:
-    return model_id.startswith(("o1", "o3", "o4-mini")) or (
-        model_id.startswith("gpt-5") and not model_id.startswith("gpt-5-chat")
-    )
-
-
-def _openai_reasoning_enabled(model_id: str, options: Mapping[str, object]) -> bool:
-    forced = options.get("forceReasoning")
-    return forced if isinstance(forced, bool) else _openai_is_reasoning_model(model_id)
-
-
-def _openai_supports_non_reasoning(model_id: str) -> bool:
-    return model_id.startswith(("gpt-5.1", "gpt-5.2", "gpt-5.3", "gpt-5.4", "gpt-5.5"))
 
 
 def _openai_supports_service_tier(model_id: str, tier: object) -> bool:
@@ -991,6 +982,7 @@ def build_text_bodies(
     limits: BatchLimits | None = None,
     *,
     kind: ModelKind = ModelKind.CHAT,
+    strict: bool = False,
 ) -> list[BuiltRequest]:
     """Serialize text requests using request-over-default precedence."""
 
@@ -1002,7 +994,11 @@ def build_text_bodies(
     base = _mapping(defaults)
     built: list[BuiltRequest] = []
     for custom_id, request in _assigned(requests):
-        merged = {**base, **request}
+        merged = _merge_text_request(base, request, provider)
+        if strict:
+            _validate_text_preflight(
+                provider, model_id, merged, _provider_options(merged, provider), kind
+            )
         body, endpoint = _text_body(provider, model_id, merged, kind)
         _validate_size(custom_id, body, limits)
         built.append(BuiltRequest(body=body, custom_id=custom_id, endpoint=endpoint))

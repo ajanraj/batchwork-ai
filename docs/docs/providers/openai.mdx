@@ -100,7 +100,7 @@ Provider-returned IDs are validated before being used in paths.
 | `stream` | Removed for batch submission |
 | Chat reasoning-model token limit | May become `max_completion_tokens` |
 | Responses token limit | Becomes `max_output_tokens` |
-| Unsupported reasoning sampling/penalties | Removed according to model behavior |
+| Unsupported reasoning sampling/penalties | CLI submission rejects explicit conflicts before upload |
 | System messages | May become developer messages or be omitted through OpenAI options |
 | Service tier | Removed for known unsupported model/tier combinations |
 

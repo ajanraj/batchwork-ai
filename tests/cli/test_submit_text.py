@@ -99,6 +99,8 @@ def test_signal_after_acceptance_emits_direct_identity_and_recovery(
         cli,
         [
             "--json",
+            "--registry",
+            str(tmp_path / "registry.sqlite3"),
             "submit",
             "text",
             str(source),
@@ -351,6 +353,232 @@ def test_invalid_explicit_config_fails_before_source_or_provider_work(
     assert "schema version 1" in result.stderr
     assert "missing.jsonl" not in result.stderr
     assert provider_requests == []
+
+
+@pytest.mark.parametrize(
+    ("provider", "endpoint"),
+    (
+        ("anthropic", "responses"),
+        ("google", "chat-completions"),
+        ("groq", "responses"),
+        ("mistral", "completions"),
+        ("together", "responses"),
+        ("xai", "chat-completions"),
+    ),
+)
+def test_submit_text_rejects_unsupported_provider_endpoint_before_provider_work(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+    provider: str,
+    endpoint: str,
+) -> None:
+    base_url, provider_requests = fake_openai
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "submit",
+            "text",
+            str(tmp_path / "missing.jsonl"),
+            "--model",
+            f"{provider}/model",
+            "--endpoint",
+            endpoint,
+            "--base-url",
+            base_url,
+        ],
+    )
+
+    assert result.exit_code == 2
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "unsupported_setting"
+    assert provider in error["message"]
+    assert endpoint in error["message"]
+    assert provider_requests == []
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "google", "xai"])
+def test_submit_text_rejects_unsupported_batch_metadata_before_provider_work(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+    provider: str,
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"hello"}\n')
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            f"{provider}/model",
+            "--batch-metadata",
+            "purpose=test",
+            "--base-url",
+            base_url,
+        ],
+    )
+
+    assert result.exit_code == 2
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "unsupported_setting"
+    assert "batch metadata" in error["message"]
+    assert provider_requests == []
+
+
+@pytest.mark.parametrize(
+    ("provider", "options", "code"),
+    (
+        ("anthropic", '{"unknownOption":true}', "provider_option_invalid"),
+        ("google", '{"ThinkingConfig":{}}', "provider_option_invalid"),
+        ("google", '{"thinkingConfig":[]}', "provider_option_invalid"),
+        ("groq", '{"unknownOption":true}', "provider_option_invalid"),
+        ("mistral", '{"unknownOption":true}', "provider_option_invalid"),
+        ("openai", '{"unknownOption":true}', "provider_option_invalid"),
+        ("openai", '{"reasoningEffort":[]}', "provider_option_invalid"),
+        ("together", '{"model":"other"}', "provider_option_invalid"),
+        ("xai", '{"unknownOption":true}', "provider_option_invalid"),
+    ),
+)
+def test_submit_text_rejects_invalid_provider_options_without_network(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+    provider: str,
+    options: str,
+    code: str,
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"hello"}\n')
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            f"{provider}/model",
+            "--provider-options",
+            options,
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_KEY",
+        ],
+        env={"TEST_KEY": "secret"},
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stderr)["error"]["code"] == code
+    assert provider_requests == []
+
+
+def test_submit_text_rejects_canonical_provider_option_collision_without_network(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"hello","maxOutputTokens":32}\n')
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/model",
+            "--provider-options",
+            '{"maxCompletionTokens":64}',
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_KEY",
+        ],
+        env={"TEST_KEY": "secret"},
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stderr)["error"]["code"] == "option_conflict"
+    assert provider_requests == []
+
+
+def test_submit_text_rejects_reasoning_sampling_collision_without_network(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"hello","temperature":0.2}\n')
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-5",
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_KEY",
+        ],
+        env={"TEST_KEY": "secret"},
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stderr)["error"]["code"] == "option_conflict"
+    assert provider_requests == []
+
+
+def test_submit_text_shallow_merges_options_and_forwards_supported_batch_metadata(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"hello","providerOptions":{"openai":{"logitBias":{"2":2}}}}\n')
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "--registry",
+            str(tmp_path / "registry.sqlite3"),
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--provider-options",
+            '{"user":"default","logitBias":{"1":1}}',
+            "--batch-metadata",
+            "purpose=test",
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_KEY",
+        ],
+        env={"TEST_KEY": "secret"},
+    )
+
+    assert result.exit_code == 0, result.stderr
+    upload = provider_requests[0][2]
+    assert b'"user":"default"' in upload
+    assert b'"logit_bias":{"2":2}' in upload
+    assert b'"logit_bias":{"1":1}' not in upload
+    assert json.loads(provider_requests[1][2])["metadata"] == {"purpose": "test"}
 
 
 @pytest.mark.parametrize(

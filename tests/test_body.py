@@ -8,6 +8,7 @@ import pytest
 from batchwork.body import build_embedding_bodies, build_image_bodies, build_text_bodies
 from batchwork.errors import BatchworkError, UnsupportedProviderError
 from batchwork.types import (
+    BatchDefaults,
     BatchEmbeddingRequest,
     BatchImageDefaults,
     BatchImageRequest,
@@ -1122,7 +1123,7 @@ def test_provider_options_map_to_provider_wire_fields() -> None:
         [
             {
                 "prompt": "hello",
-                "providerOptions": {"together": {"custom_wire": "value"}},
+                "providerOptions": {"together": {"custom_wire": "value", "strictJsonSchema": True}},
             }
         ],
     )[0]
@@ -1140,8 +1141,157 @@ def test_provider_options_map_to_provider_wire_fields() -> None:
     assert google.body["generationConfig"] == {"responseModalities": ["TEXT"]}
     assert openai.body["reasoning_effort"] == "low"
     assert together.body["custom_wire"] == "value"
+    assert together.body["strictJsonSchema"] is True
     assert xai.body["store"] is False
     assert xai.body["include"] == ["reasoning.encrypted_content"]
+
+
+def test_text_provider_options_shallow_merge_selected_branch() -> None:
+    built = build_text_bodies(
+        BatchProvider.GOOGLE,
+        "gemini-test",
+        [
+            {
+                "prompt": "hello",
+                "providerOptions": {"google": {"thinkingConfig": {"includeThoughts": True}}},
+            }
+        ],
+        BatchDefaults(
+            provider_options={
+                "google": {
+                    "thinkingConfig": {"thinkingBudget": 1024},
+                    "serviceTier": "flex",
+                }
+            }
+        ),
+        strict=True,
+    )[0]
+
+    assert built.body["generationConfig"]["thinkingConfig"] == {"includeThoughts": True}
+    assert built.body["serviceTier"] == "flex"
+
+
+@pytest.mark.parametrize(
+    "provider",
+    [provider for provider in BatchProvider if provider is not BatchProvider.TOGETHER],
+)
+def test_strict_text_provider_options_reject_unknown_keys(provider: BatchProvider) -> None:
+    with pytest.raises(BatchworkError, match='provider option "unknownOption" is unsupported'):
+        build_text_bodies(
+            provider,
+            "model",
+            [
+                {
+                    "prompt": "hello",
+                    "providerOptions": {provider.value: {"unknownOption": True}},
+                }
+            ],
+            strict=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "message"),
+    [
+        ("reasoningEffort", [], 'provider option "reasoningEffort" must be a string'),
+        ("systemMessageMode", "silent", 'provider option "systemMessageMode" must be one of'),
+        ("truncation", "middle", 'provider option "truncation" must be one of'),
+    ],
+)
+def test_strict_openai_provider_options_reject_invalid_values(
+    option: str, value: object, message: str
+) -> None:
+    with pytest.raises(BatchworkError, match=message):
+        build_text_bodies(
+            BatchProvider.OPENAI,
+            "gpt-4.1",
+            [{"prompt": "hello", "providerOptions": {"openai": {option: value}}}],
+            strict=True,
+            kind=ModelKind.RESPONSES,
+        )
+
+
+def test_strict_openai_responses_accepts_conversation_object() -> None:
+    built = build_text_bodies(
+        BatchProvider.OPENAI,
+        "gpt-4.1",
+        [
+            {
+                "prompt": "hello",
+                "providerOptions": {"openai": {"conversation": {"id": "conv_1"}}},
+            }
+        ],
+        strict=True,
+        kind=ModelKind.RESPONSES,
+    )[0]
+
+    assert built.body["conversation"] == {"id": "conv_1"}
+
+
+@pytest.mark.parametrize("setting", ["temperature", "top_p", "frequency_penalty"])
+def test_strict_openai_reasoning_rejects_dropped_settings(setting: str) -> None:
+    with pytest.raises(BatchworkError, match=f"canonical {setting} conflicts"):
+        build_text_bodies(
+            BatchProvider.OPENAI,
+            "gpt-5",
+            [{"prompt": "hello", setting: 0.2}],
+            strict=True,
+        )
+
+
+def test_together_passthrough_rejects_reserved_wire_fields() -> None:
+    with pytest.raises(BatchworkError, match='provider option "model" is reserved'):
+        build_text_bodies(
+            BatchProvider.TOGETHER,
+            "model",
+            [{"prompt": "hello", "providerOptions": {"together": {"model": "other"}}}],
+            strict=True,
+        )
+
+
+def test_strict_text_preflight_rejects_semantic_collision_and_unsupported_setting() -> None:
+    with pytest.raises(BatchworkError, match=r"max_output_tokens.*maxCompletionTokens"):
+        build_text_bodies(
+            BatchProvider.OPENAI,
+            "model",
+            [
+                {
+                    "prompt": "hello",
+                    "maxOutputTokens": 32,
+                    "providerOptions": {"openai": {"maxCompletionTokens": 64}},
+                }
+            ],
+            strict=True,
+        )
+
+
+def test_xai_top_logprobs_accepts_documented_range() -> None:
+    built = build_text_bodies(
+        BatchProvider.XAI,
+        "model",
+        [{"prompt": "hello", "providerOptions": {"xai": {"topLogprobs": 0}}}],
+        kind=ModelKind.RESPONSES,
+        strict=True,
+    )[0]
+    assert built.body["top_logprobs"] == 0
+
+    with pytest.raises(BatchworkError, match="integer between 0 and 8"):
+        build_text_bodies(
+            BatchProvider.XAI,
+            "model",
+            [{"prompt": "hello", "providerOptions": {"xai": {"topLogprobs": 9}}}],
+            kind=ModelKind.RESPONSES,
+            strict=True,
+        )
+
+    with pytest.raises(BatchworkError, match='canonical setting "frequency_penalty"'):
+        build_text_bodies(
+            BatchProvider.XAI,
+            "model",
+            [{"prompt": "hello", "frequencyPenalty": 0.2}],
+            kind=ModelKind.RESPONSES,
+            strict=True,
+        )
 
 
 def test_embedding_provider_options_and_wire_shapes() -> None:
