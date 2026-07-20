@@ -146,7 +146,10 @@ async def test_materializer_preserves_unknown_image_media_with_bin_extension(
 
 
 @pytest.mark.asyncio
-async def test_materializer_never_overwrites_a_completed_image(tmp_path: Path) -> None:
+async def test_materializer_never_overwrites_a_completed_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     output = prepare_output_directory(tmp_path / "images", operation="results")
     materializer = ImageMaterializer(output, operation="results")
     result = BatchResult(
@@ -163,6 +166,12 @@ async def test_materializer_never_overwrites_a_completed_image(tmp_path: Path) -
     assert first is not None
     image_path = output / first.images[0].path
     original = image_path.read_bytes()
+    original_exists = Path.exists
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda path: False if path == image_path else original_exists(path),
+    )
 
     with pytest.raises(CliFailure) as failure:
         await materializer.materialize_result("bw_" + "a" * 32, None, result)

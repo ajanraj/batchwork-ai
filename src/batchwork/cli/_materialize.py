@@ -182,7 +182,14 @@ class ImageMaterializer:
                 filename = self._filename(result.custom_id, index, extension)
                 if (self.output_dir / filename).exists():
                     raise ValueError(f'completed image "{filename}" already exists')
-                self._atomic_write(self.output_dir / filename, resolved.data)
+                try:
+                    self._atomic_write(
+                        self.output_dir / filename,
+                        resolved.data,
+                        replace=False,
+                    )
+                except FileExistsError as error:
+                    raise ValueError(f'completed image "{filename}" already exists') from error
                 entry = ImageManifestEntry(
                     path=filename,
                     custom_id=result.custom_id,
@@ -237,7 +244,7 @@ class ImageMaterializer:
             )
         return _EXTENSIONS.get(detected or media_type, "bin")
 
-    def _atomic_write(self, path: Path, data: bytes) -> None:
+    def _atomic_write(self, path: Path, data: bytes, *, replace: bool = True) -> None:
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=self.output_dir)
         try:
             os.fchmod(descriptor, 0o600)
@@ -246,7 +253,13 @@ class ImageMaterializer:
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, path)
+            if replace:
+                os.replace(temporary, path)
+            elif os.name == "nt":
+                os.rename(temporary, path)
+            else:
+                os.link(temporary, path)
+                os.unlink(temporary)
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
