@@ -2,6 +2,12 @@
 
 All notable changes to `batchwork-ai` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [semantic versioning](https://semver.org/).
 
+## [0.2.2] - 2026-07-20
+
+### Changed
+
+- `batchwork list` human output now shows when each job was submitted and completed (UTC), in both the wide table and the narrow block layout. Machine output is unchanged; it already carried these timestamps.
+
 ## [0.2.1] - 2026-07-20
 
 ### Fixed
@@ -50,6 +56,7 @@ First release published to PyPI as `batchwork-ai`.
 
 Initial tagged version; superseded by 0.1.1 for the PyPI name change.
 
+[0.2.2]: https://github.com/ajanraj/batchwork-ai/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ajanraj/batchwork-ai/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ajanraj/batchwork-ai/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/ajanraj/batchwork-ai/compare/v0.1.0...v0.1.1
