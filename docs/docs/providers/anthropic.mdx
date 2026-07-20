@@ -1,6 +1,6 @@
 ---
 title: Anthropic
-description: Anthropic Message Batches with inline submission and same-origin streamed results.
+description: 'Anthropic Message Batches in Batchwork with inline submission and same-origin streamed results through the typed client.'
 ---
 
 Anthropic accepts Message Batches inline rather than through a JSONL upload. Batchwork translates messages and tools into Anthropic-native blocks, polls the batch object, and streams the provider’s JSONL results URL.

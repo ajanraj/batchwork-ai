@@ -1,6 +1,6 @@
 ---
 title: Polling and webhooks
-description: Track provider jobs, poll from a scheduler, and deliver signed completion events.
+description: 'Track provider jobs with BatchPoller, poll from a scheduler, and deliver signed webhook completion events safely.'
 ---
 
 `BatchPoller` moves long-running provider work out of an HTTP request. Track each batch once, run `tick()` from a worker or scheduler, and deliver a completion callback or signed webhook when the provider reaches a terminal state.
