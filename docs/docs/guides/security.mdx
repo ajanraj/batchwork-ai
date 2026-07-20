@@ -9,7 +9,7 @@ Pass secrets through provider environment variables or `ProviderCredentials`; do
 
 ## Remote media
 
-The default media resolver accepts bytes, data URLs, public HTTPS URLs, and provider file references. For fetched URLs it rejects credentials, private or reserved addresses, DNS rebinding, non-HTTPS redirects, oversized bodies, and unsupported media. Keep `BatchLimits.max_request_bytes` appropriate for your service.
+The default media resolver accepts bytes, data URLs, public HTTPS URLs, local paths, and provider file references. Local paths are literal: home directories, environment variables, shell substitutions, and globs are not expanded. Files must resolve to readable regular files and are read only up to the configured bound. The CLI resolves relative paths from a workload file's parent or from the working directory for stdin, then freezes the bytes before provider serialization. For fetched URLs the resolver rejects credentials, private or reserved addresses, DNS rebinding, non-HTTPS redirects, oversized bodies, and unsupported media. It uses an isolated client and never forwards provider credentials, configured headers, cookies, or authorization state. Keep `BatchLimits.max_request_bytes` appropriate for your service.
 
 ## Provider-direct URLs
 

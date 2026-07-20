@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
@@ -18,6 +19,7 @@ import batchwork.cli._submit_text as submit_module
 from batchwork.cli._commands import cli
 from batchwork.cli._failures import InterruptionRequested, TerminationRequested
 from batchwork.cli._volume import WorkloadVolume, require_large_batch_authorization
+from batchwork.media import DefaultMediaResolver
 
 
 class _FakeOpenAIHandler(BaseHTTPRequestHandler):
@@ -216,6 +218,57 @@ def test_installed_submit_text_emits_job_and_persists_metadata_only(
     database = registry.read_bytes()
     assert b"private prompt" not in database
     assert b"top-secret" not in database
+
+
+def test_installed_local_media_failure_prevents_provider_request(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "file",
+                                "data": "missing.pdf",
+                                "mediaType": "application/pdf",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        + "\n"
+    )
+
+    result = subprocess.run(
+        [
+            str(_installed_batchwork()),
+            "--json",
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--base-url",
+            base_url,
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "OPENAI_API_KEY": "secret", "NO_COLOR": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert json.loads(result.stderr)["error"]["code"] == "input_validation_failed"
+    assert provider_requests == []
 
 
 def test_submit_text_resolves_default_profile_model_and_route(
@@ -628,6 +681,205 @@ def test_submit_text_accepts_every_transport_and_explicit_stdin(
     assert result.exit_code == 0, result.stderr
     assert [request[0] for request in provider_requests] == ["/v1/files", "/v1/batches"]
     assert b'"custom_id":"request-0"' in provider_requests[0][2]
+
+
+def test_submit_text_resolves_local_media_from_source_parent_and_freezes_bytes(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_url, provider_requests = fake_openai
+    source_dir = tmp_path / "workload"
+    source_dir.mkdir()
+    media = source_dir / "image.png"
+    original_bytes = b"\x89PNG\r\n\x1a\noriginal"
+    media.write_bytes(original_bytes)
+    source = source_dir / "requests.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "file",
+                                "data": "image.png",
+                                "mediaType": "image/png",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        + "\n"
+    )
+    original_resolve = DefaultMediaResolver.resolve
+
+    async def resolve_and_replace(
+        self: DefaultMediaResolver,
+        media_source: object,
+        *,
+        media_type: str | None = None,
+        max_bytes: int,
+    ) -> object:
+        resolved = await original_resolve(
+            self, media_source, media_type=media_type, max_bytes=max_bytes
+        )
+        if media_source == "image.png":
+            media.write_bytes(b"\x89PNG\r\n\x1a\nchanged")
+        return resolved
+
+    monkeypatch.setattr(DefaultMediaResolver, "resolve", resolve_and_replace)
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--registry",
+            str(tmp_path / "registry.sqlite3"),
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--base-url",
+            base_url,
+        ],
+        env={"OPENAI_API_KEY": "secret"},
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert base64.b64encode(original_bytes) in provider_requests[0][2]
+    assert base64.b64encode(media.read_bytes()) not in provider_requests[0][2]
+
+
+def test_submit_text_resolves_stdin_media_from_working_directory(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_url, provider_requests = fake_openai
+    media = tmp_path / "document.pdf"
+    media.write_bytes(b"%PDF-local")
+    monkeypatch.chdir(tmp_path)
+    request = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "file",
+                        "data": "document.pdf",
+                        "mediaType": "application/pdf",
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--registry",
+            str(tmp_path / "registry.sqlite3"),
+            "submit",
+            "text",
+            "-",
+            "--format",
+            "json",
+            "--model",
+            "openai/gpt-test",
+            "--base-url",
+            base_url,
+        ],
+        input=json.dumps(request),
+        env={"OPENAI_API_KEY": "secret"},
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert base64.b64encode(media.read_bytes()) in provider_requests[0][2]
+
+
+def test_submit_text_does_not_classify_path_like_ordinary_text(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "prompt": "missing.txt",
+                "providerOptions": {"openai": {"user": "also-missing.txt"}},
+            }
+        )
+        + "\n"
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--registry",
+            str(tmp_path / "registry.sqlite3"),
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--base-url",
+            base_url,
+        ],
+        env={"OPENAI_API_KEY": "secret"},
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert b'"content":"missing.txt"' in provider_requests[0][2]
+    assert b'"user":"also-missing.txt"' in provider_requests[0][2]
+
+
+def test_submit_text_local_media_failure_makes_no_provider_request(
+    tmp_path: Path,
+    fake_openai: tuple[str, list[tuple[str, dict[str, str], bytes]]],
+) -> None:
+    base_url, provider_requests = fake_openai
+    source = tmp_path / "requests.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "file",
+                                "data": "missing.txt",
+                                "mediaType": "text/plain",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        + "\n"
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--json",
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--base-url",
+            base_url,
+        ],
+        env={"OPENAI_API_KEY": "secret"},
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stderr)["error"]["code"] == "input_validation_failed"
+    assert provider_requests == []
 
 
 @pytest.mark.parametrize(

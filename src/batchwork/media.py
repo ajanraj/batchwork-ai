@@ -6,9 +6,13 @@ import asyncio
 import base64
 import binascii
 import mimetypes
+import os
+import re
 import ssl
-from collections.abc import AsyncIterable, AsyncIterator, Iterable
+import stat
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, TypeAlias
 from urllib.parse import unquote_to_bytes, urljoin, urlsplit
 
@@ -33,6 +37,7 @@ from .types import (
 )
 
 _MAX_REDIRECTS = 5
+_STRICT_BASE64 = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
 SocketOption: TypeAlias = (
     tuple[int, int, int] | tuple[int, int, bytes | bytearray] | tuple[int, int, None, int]
 )
@@ -348,6 +353,19 @@ def _decode_inline(value: str, max_bytes: int) -> tuple[bytes, str | None]:
         ) from error
 
 
+def _decode_raw_base64(value: str, max_bytes: int) -> bytes | None:
+    if not value or _STRICT_BASE64.fullmatch(value) is None:
+        return None
+    padding = len(value) - len(value.rstrip("="))
+    decoded_size = len(value) // 4 * 3 - padding
+    if decoded_size > max_bytes:
+        raise _MediaLimitExceededError(f"batchwork: media exceeds the {max_bytes} byte limit")
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
 def _validated_type(data: bytes, declared: str | None, fallback: str | None = None) -> str:
     declared = declared.split(";", 1)[0].strip().lower() if declared else None
     detected = _sniff_media_type(data)
@@ -369,16 +387,18 @@ def _validated_type(data: bytes, declared: str | None, fallback: str | None = No
 
 
 class DefaultMediaResolver:
-    """Resolve inline data or HTTPS media with SSRF and rebinding protection."""
+    """Resolve local, inline, or HTTPS media with bounded secure reads."""
 
     def __init__(
         self,
         *,
         timeout: httpx.Timeout | float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        base_path: str | Path | None = None,
     ) -> None:
         self._timeout = timeout
         self._transport = transport
+        self._base_path = (Path.cwd() if base_path is None else Path(base_path)).resolve()
 
     async def resolve(
         self,
@@ -387,7 +407,7 @@ class DefaultMediaResolver:
         media_type: str | None = None,
         max_bytes: int,
     ) -> ResolvedMedia:
-        if isinstance(source, (ProviderFileReference, TaggedFileDataReference)):
+        if isinstance(source, (Mapping, ProviderFileReference, TaggedFileDataReference)):
             raise MediaResolutionError("batchwork: provider file references cannot be downloaded")
         if isinstance(source, TaggedFileDataData):
             raw_data = source.data
@@ -407,16 +427,54 @@ class DefaultMediaResolver:
 
         value = str(source)
         parsed = urlsplit(value)
-        if parsed.scheme and parsed.scheme != "https":
-            if parsed.scheme != "data":
+        scheme = parsed.scheme.lower()
+        if scheme in {"http", "https"}:
+            if scheme != "https":
                 raise MediaResolutionError("batchwork: remote media URLs must use HTTPS")
-        if parsed.scheme != "https":
+            if parsed.username is not None or parsed.password is not None:
+                raise MediaResolutionError(
+                    "batchwork: remote media URLs must not include credentials"
+                )
+            return await self._download(value, media_type=media_type, max_bytes=max_bytes)
+        if scheme == "data":
             data, declared = _decode_inline(value, max_bytes)
             _validate_size(data, max_bytes)
             return ResolvedMedia(data, _validated_type(data, media_type or declared))
-        if parsed.username is not None or parsed.password is not None:
-            raise MediaResolutionError("batchwork: remote media URLs must not include credentials")
-        return await self._download(value, media_type=media_type, max_bytes=max_bytes)
+        data = _decode_raw_base64(value, max_bytes)
+        if data is None:
+            return await asyncio.to_thread(
+                self._read_local,
+                value,
+                media_type=media_type,
+                max_bytes=max_bytes,
+            )
+        _validate_size(data, max_bytes)
+        return ResolvedMedia(data, _validated_type(data, media_type))
+
+    def _read_local(self, value: str, *, media_type: str | None, max_bytes: int) -> ResolvedMedia:
+        candidate = self._base_path / Path(value)
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as error:
+            raise MediaResolutionError(
+                f'batchwork: local media path "{value}" could not be resolved'
+            ) from error
+        try:
+            with resolved.open("rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise MediaResolutionError(
+                        f'batchwork: local media path "{value}" must be a readable regular file'
+                    )
+                data = stream.read(max_bytes + 1)
+        except MediaResolutionError:
+            raise
+        except OSError as error:
+            raise MediaResolutionError(
+                f'batchwork: local media path "{value}" must be a readable regular file'
+            ) from error
+        _validate_size(data, max_bytes)
+        fallback, _ = mimetypes.guess_type(resolved.name)
+        return ResolvedMedia(data, _validated_type(data, media_type, fallback))
 
     async def _download(self, url: str, *, media_type: str | None, max_bytes: int) -> ResolvedMedia:
         transport = (

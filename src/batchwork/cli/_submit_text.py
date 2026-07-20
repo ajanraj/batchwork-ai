@@ -21,11 +21,13 @@ from batchwork.body import build_text_bodies, validate_request_count
 from batchwork.client import Batchwork
 from batchwork.errors import (
     BatchworkError,
+    MediaResolutionError,
     _LimitExceededError,
     _OptionConflictError,
     _ProviderOptionError,
     _UnsupportedSettingError,
 )
+from batchwork.media import DefaultMediaResolver
 from batchwork.types import (
     BatchDefaults,
     BatchLimits,
@@ -470,9 +472,12 @@ async def submit_text(
         routing_fingerprint=route.registry.fingerprint,
         profile=profile_name,
     )
+    media_base_path = Path.cwd() if options.source == Path("-") else options.source.resolve().parent
     _active_submission_context = submission_context
     try:
-        async with Batchwork() as client:
+        async with Batchwork(
+            media_resolver=DefaultMediaResolver(base_path=media_base_path)
+        ) as client:
             job = await client._submit_text_batch(
                 model=spec,
                 requests=requests,
@@ -492,6 +497,9 @@ async def submit_text(
     except _LimitExceededError as error:
         _active_submission_context = None
         raise CliUsageError(str(error), code="hard_limit_exceeded") from error
+    except MediaResolutionError as error:
+        _active_submission_context = None
+        raise CliUsageError(str(error), code="input_validation_failed") from error
     except Exception as error:
         _active_submission_context = None
         failure = provider_failure(
