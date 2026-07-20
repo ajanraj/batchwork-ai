@@ -5,6 +5,26 @@ description: Generate image batches through OpenAI, Google Gemini, and xAI.
 
 Image-output batches are supported through OpenAI, Google Gemini, and xAI. Images supplied to a text request are input media and use `batch()`, not `batch_images()`.
 
+## CLI
+
+Use `batchwork submit images` to return after registration or `batchwork run images` for the complete submit, wait, and results lifecycle. JSON, JSONL, CSV, and text sources map to `BatchImageRequest`; missing `custom_id` values are generated deterministically.
+
+```bash
+batchwork --json run images prompts.jsonl \
+  --model openai/gpt-image-2 \
+  --n 2 \
+  --size 1536x1024
+```
+
+Machine output preserves normalized image data and URLs. Human output shows image counts but never prints inline data or complete URLs. Result retrieval does not download URLs or write local files unless `--output-dir` is explicit:
+
+```bash
+batchwork --json results bw_0123456789abcdef0123456789abcdef \
+  --output-dir ./generated-images
+```
+
+The output target must be absent or an empty non-symlink directory. Batchwork writes each completed image atomically and maintains `manifest.json`; inline data wins when a provider returns both data and a URL.
+
 ## OpenAI
 
 ```python
@@ -29,7 +49,7 @@ async with Batchwork() as client:
     images = (await job.collect())[0].images
 ```
 
-OpenAI image batches target `/v1/images/generations` and normalize inline base64 results. `n` and `size` are supported. Provider options include `quality`, `style`, `background`, `moderation`, `outputFormat`, `outputCompression`, and `user`. Generic `aspect_ratio` and `seed` are not serialized. Image editing is outside `batch_images()`.
+OpenAI image batches target `/v1/images/generations` and normalize inline base64 results. `n` and model-supported `size` values are accepted. Provider options are model-specific: DALL-E 3 supports `quality`, `style`, and `user`; DALL-E 2 supports `user`; GPT Image models support `background`, `moderation`, `outputFormat`, `outputCompression`, `quality`, and `user`. Generic `aspect_ratio` and `seed` are rejected. Image editing is outside `batch_images()`.
 
 ## Google Gemini
 

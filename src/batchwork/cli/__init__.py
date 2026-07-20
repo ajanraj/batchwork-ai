@@ -49,6 +49,13 @@ def main() -> None:
         sys.stdout.flush()
     except (BrokenPipeError, QuietBrokenPipe):
         _close_broken_stdout()
+    except SystemExit as error:
+        if _received_signal is not None:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            code = error.code if isinstance(error.code, int) else 1
+            os._exit(code)
+        raise
     finally:
         _received_signal = None
         signal.signal(signal.SIGINT, previous_interrupt)

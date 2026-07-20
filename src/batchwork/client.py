@@ -371,21 +371,66 @@ class Batchwork:
         base_url: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> BatchJob:
+        return await self._submit_image_batch(
+            model=model,
+            requests=requests,
+            defaults=defaults,
+            metadata=metadata,
+            limits=limits,
+            credentials=credentials,
+            api_key=api_key,
+            base_url=base_url,
+            headers=headers,
+            validate_upload=None,
+        )
+
+    async def _submit_image_batch(
+        self,
+        *,
+        model: str | ModelSpec,
+        requests: Sequence[BatchImageRequest],
+        defaults: BatchImageDefaults | None = None,
+        metadata: Mapping[str, str] | None = None,
+        limits: BatchLimits | None = None,
+        credentials: ProviderCredentials | Mapping[str, object] | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        headers: Mapping[str, str] | None = None,
+        validate_upload: Callable[[int], None] | None,
+    ) -> BatchJob:
         spec = resolve_model(model)
         self._validate_requests(requests)
         adapter, resolved_credentials = self._adapter_and_credentials(
             spec.provider, credentials, api_key=api_key, base_url=base_url, headers=headers
         )
         limits = limits or BatchLimits()
-        built = build_image_bodies(spec.provider, spec.model_id, requests, defaults, limits)
-        snapshot = await adapter.submit(
-            built=built,
-            credentials=resolved_credentials,
-            endpoint=built[0].endpoint,
-            limits=limits,
-            metadata=metadata,
-            model_id=spec.model_id,
+        built = build_image_bodies(
+            spec.provider,
+            spec.model_id,
+            requests,
+            defaults,
+            limits,
+            strict=True,
         )
+        if validate_upload is None:
+            snapshot = await adapter.submit(
+                built=built,
+                credentials=resolved_credentials,
+                endpoint=built[0].endpoint,
+                limits=limits,
+                metadata=metadata,
+                model_id=spec.model_id,
+            )
+        else:
+            snapshot = await adapter.submit(
+                built=built,
+                credentials=resolved_credentials,
+                endpoint=built[0].endpoint,
+                limits=limits,
+                metadata=metadata,
+                model_id=spec.model_id,
+                validate_upload=validate_upload,
+            )
         return BatchJob(adapter, resolved_credentials, snapshot, ensure_open=self._ensure_open)
 
     async def get_batch(self, ref: BatchRef) -> BatchJob:

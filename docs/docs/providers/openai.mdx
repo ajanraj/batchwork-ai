@@ -82,7 +82,7 @@ job = await client.batch_images(
 )
 ```
 
-Each item targets `/v1/images/generations`. `n` and `size` are supported. OpenAI image provider options include `quality`, `style`, `background`, `moderation`, `outputFormat`, `outputCompression`, and `user`. Generated image bytes are normalized into `result.images[].data`; usage is normalized when the provider returns it. Image editing is not exposed by `batch_images()`.
+Each item targets `/v1/images/generations`. `n` and model-supported `size` values are accepted. Provider options are validated by model family: DALL-E 3 supports `quality`, `style`, and `user`; DALL-E 2 supports `user`; GPT Image models support `background`, `moderation`, `outputFormat`, `outputCompression`, `quality`, and `user`. Generated image bytes are normalized into `result.images[].data`; usage is normalized when the provider returns it. Image editing is not exposed by `batch_images()`.
 
 ## Lifecycle
 

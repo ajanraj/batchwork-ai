@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import random
 import sqlite3
 import ssl
@@ -245,7 +246,8 @@ def resolve_job(root: RootOptions, options: LifecycleOptions) -> ResolvedJob:
     loaded = load_config(root.config)
     if options.name is not None and not options.save:
         raise CliUsageError("--name requires --save.")
-    if options.modality is not None and not options.save:
+    expected_image_results = options.operation == "results" and options.modality == "images"
+    if options.modality is not None and not options.save and not expected_image_results:
         raise CliUsageError("--modality requires --save.")
     if options.name is not None and not is_job_name(options.name):
         raise CliUsageError("--name must be 1-64 shell-safe characters and cannot be a record ID.")
@@ -733,11 +735,12 @@ async def results_job(
     root: RootOptions,
     options: LifecycleOptions,
     *,
-    on_result: Callable[[ResolvedJob, BatchResult], None] | None = None,
+    on_result: Callable[[ResolvedJob, BatchResult], None | Awaitable[None]] | None = None,
     on_snapshot: Callable[[ResolvedJob, BatchSnapshot], None] | None = None,
     on_retry: Callable[[], None] | None = None,
     output_is_streaming: bool = False,
     initial_records_emitted: int = 0,
+    restart_after_result: bool = True,
 ) -> LifecycleResult:
     resolved = resolve_job(root, options)
     active = _activate("results", resolved)
@@ -765,7 +768,9 @@ async def results_job(
                                 raise RuntimeError("batchwork: missing buffered result collection")
                             results.append(item)
                         else:
-                            on_result(resolved, item)
+                            emitted = on_result(resolved, item)
+                            if inspect.isawaitable(emitted):
+                                await emitted
                         if item.status is BatchResultStatus.SUCCEEDED:
                             item_successes += 1
                         else:
@@ -778,10 +783,10 @@ async def results_job(
                 except (InterruptionRequested, TerminationRequested):
                     raise
                 except Exception as error:
-                    result_records_emitted = (
-                        item_successes + item_failures if output_is_streaming else 0
+                    consumed_items = item_successes + item_failures
+                    can_restart = consumed_items == 0 or (
+                        not output_is_streaming and restart_after_result
                     )
-                    can_restart = result_records_emitted == 0
                     if (
                         attempt + 1 < _READ_ATTEMPTS
                         and can_restart
@@ -944,6 +949,8 @@ def render_results(result: LifecycleResult, mode: OutputMode) -> str:
     for item in items:
         if item.embedding is not None:
             preview = f" — {len(item.embedding)} dimensions"
+        elif item.images is not None:
+            preview = f" — {len(item.images)} image(s)"
         else:
             preview = f" — {item.text[:80]}" if item.text else ""
         lines.append(f"{item.custom_id}: {item.status.value}{preview}")

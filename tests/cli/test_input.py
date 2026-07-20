@@ -7,7 +7,7 @@ import click
 import pytest
 
 import batchwork.cli._input as input_module
-from batchwork.cli._input import load_embedding_requests, load_text_requests
+from batchwork.cli._input import load_embedding_requests, load_image_requests, load_text_requests
 
 
 def _write_source(tmp_path: Path, name: str, contents: bytes) -> Path:
@@ -83,6 +83,55 @@ def test_load_embedding_requests_rejects_whole_source_with_coordinates(tmp_path:
 
     with pytest.raises(click.UsageError, match="JSONL line 2"):
         load_embedding_requests(source, None)
+
+
+@pytest.mark.parametrize(
+    ("name", "contents", "prompts"),
+    (
+        ("images.json", b'{"prompt":"one","n":2,"aspect_ratio":"16:9"}', ["one"]),
+        ("images.jsonl", b'{"prompt":"one"}\n{"prompt":"two"}\n', ["one", "two"]),
+        (
+            "images.csv",
+            b"prompt,n,aspect_ratio,seed,size\none,2,16:9,42,1024x1024\ntwo,,,,\n",
+            ["one", "two"],
+        ),
+        ("images.txt", b"  one  \n\ntwo\n", ["  one  ", "two"]),
+    ),
+)
+def test_load_image_requests_accepts_all_transports(
+    tmp_path: Path,
+    name: str,
+    contents: bytes,
+    prompts: list[str],
+) -> None:
+    requests = load_image_requests(_write_source(tmp_path, name, contents), None)
+
+    assert [request.prompt for request in requests] == prompts
+    assert [request.custom_id for request in requests] == [
+        f"request-{index}" for index in range(len(requests))
+    ]
+
+
+def test_load_image_requests_rejects_whole_source_with_coordinates(tmp_path: Path) -> None:
+    source = _write_source(
+        tmp_path,
+        "images.jsonl",
+        b'{"prompt":"one"}\n{"prompt":"two","n":0}\n',
+    )
+
+    with pytest.raises(click.UsageError, match="JSONL line 2"):
+        load_image_requests(source, None)
+
+
+def test_load_image_requests_rejects_nested_csv_fields(tmp_path: Path) -> None:
+    source = _write_source(
+        tmp_path,
+        "images.csv",
+        b"prompt,provider_options\none,{}\n",
+    )
+
+    with pytest.raises(click.UsageError, match="row 1, column 2"):
+        load_image_requests(source, None)
 
 
 @pytest.mark.parametrize("name", ("requests.data", "requests"))
