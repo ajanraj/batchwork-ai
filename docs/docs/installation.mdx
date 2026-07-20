@@ -19,7 +19,7 @@ Batchwork requires Python 3.11 or newer. The base install contains HTTPX and Pyd
 
 ## Install the CLI
 
-Install the `batchwork` executable as an isolated tool:
+The same package ships the `batchwork` command, so you can submit and manage batches from the terminal without writing Python. Install it as an isolated tool:
 
 ```console
 uv tool install batchwork-ai
@@ -27,7 +27,7 @@ batchwork --version
 batchwork --help
 ```
 
-For an approved one-shot command without a permanent tool install:
+To try it once without installing anything permanently:
 
 ```console
 uvx --from batchwork-ai batchwork --help
@@ -49,7 +49,7 @@ Submitting a batch performs network requests and creates a real provider job. Pr
 
 ## Install the Agent Skill
 
-Install the `batchwork-ai` Agent Skill:
+If you use a coding agent such as Claude Code or Cursor, the `batchwork-ai` Agent Skill teaches it to drive the CLI safely: when to ask before spending money, how to keep job identity across turns, and how to recover interrupted work.
 
 ```console
 npx skills add ajanraj/batchwork-ai@batchwork-ai

@@ -2,13 +2,14 @@
 
 ![Batchwork — one typed API for provider-native AI batch jobs](docs/public/og-image.png)
 
-Unified async batch API for OpenAI, Anthropic, Google Gemini, Groq, Mistral, Together AI, and xAI. Access provider-native batch pricing—often up to 50% lower than standard synchronous requests—through one typed interface while Batchwork handles provider-specific serialization, submission, polling, and result normalization. Pricing and eligibility remain provider- and model-specific. Built for Python by Ajanraj.
+Unified async batch API for OpenAI, Anthropic, Google Gemini, Groq, Mistral, Together AI, and xAI. Providers price eligible batch requests up to 50% below standard synchronous calls, and Batchwork gives you that pricing through one typed Python interface and one CLI. It handles provider-specific serialization, submission, polling, and result parsing so you do not have to. Pricing and eligibility remain provider- and model-specific.
 
 - One typed API for provider-native batch jobs
 - Text, embedding, and image workloads
 - Normalized jobs, results, usage, and errors
 - Messages, tools, structured content, and remote media
 - Polling, persistent stores, and signed webhooks
+- A `batchwork` CLI and Agent Skill for terminals, scripts, and coding agents
 - No provider SDK or JavaScript runtime dependencies
 
 📖 **Full documentation: [batchwork.ajanraj.com](https://batchwork.ajanraj.com)**
@@ -39,7 +40,7 @@ See [Configuration](https://batchwork.ajanraj.com/docs/configuration) for every 
 
 ### Command-line tool
 
-Install the standalone command with `uv tool`:
+The same package ships a `batchwork` command, so you can submit and manage batches without writing Python. Install it with `uv tool`:
 
 ```bash
 uv tool install batchwork-ai
@@ -62,6 +63,12 @@ batchwork --jsonl --quiet run text requests.jsonl --model openai/gpt-5
 ```
 
 Machine output uses schema version 1. Global controls such as `--jsonl`, `--profile`, and `--quiet` precede the command. Preserve the first emitted job identity, capture stdout/stderr/exit status separately, and never retry an acceptance-ambiguous submission automatically. Image files are written only when `--output-dir` is explicit.
+
+If you use a coding agent, the `batchwork-ai` Agent Skill teaches it the same contract, including when to ask before spending money and how to resume interrupted jobs:
+
+```bash
+npx skills add ajanraj/batchwork-ai@batchwork-ai
+```
 
 See the [CLI guide](https://batchwork.ajanraj.com/docs/cli), [configuration and registry reference](https://batchwork.ajanraj.com/docs/reference/cli-configuration-registry), [machine schema](https://batchwork.ajanraj.com/docs/reference/cli-machine-schema), and [exit catalog](https://batchwork.ajanraj.com/docs/guides/cli-exits).
 

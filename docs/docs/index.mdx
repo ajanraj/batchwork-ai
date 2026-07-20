@@ -3,7 +3,7 @@ title: Batchwork for Python
 description: One typed async workflow for provider-native AI batch jobs.
 ---
 
-Batchwork submits large text, embedding, and image workloads to seven provider-native batch APIs, then exposes one normalized job and result lifecycle.
+Batchwork submits large text, embedding, and image workloads to seven provider-native batch APIs, then exposes one normalized job and result lifecycle. Use it as a typed async Python library, or from the terminal with the `batchwork` CLI, which gives scripts and coding agents the same lifecycle with stable JSON output and exit codes.
 
 ```python
 from batchwork import BatchRequest, Batchwork
@@ -22,6 +22,7 @@ async with Batchwork() as client:
 ## Start here
 
 - [Installation](/docs/installation): install with uv or pip and configure the first credential.
+- [Command-line interface](/docs/cli): the same batch lifecycle from your terminal, scripts, or coding agents.
 - [Configuration](/docs/configuration): model syntax, credentials, limits, and shared matrices.
 - [Jobs](/docs/guides/jobs): submit, poll, wait, cancel, and resume.
 - [Results](/docs/guides/results): stream records, correlate IDs, and handle partial failures.
@@ -43,6 +44,9 @@ async with Batchwork() as client:
 ## Reference
 
 - [Public API](/docs/api)
+- [CLI machine schema](/docs/reference/cli-machine-schema)
+- [CLI machine errors](/docs/guides/cli-exits)
+- [CLI configuration and registry](/docs/reference/cli-configuration-registry)
 - [FAQ](/docs/faq)
 
 Provider processing is asynchronous and can take minutes or up to 24 hours. Output order is not stable; correlate through `custom_id`. Provider-owned pricing, limits, and model eligibility can change independently of Batchwork.

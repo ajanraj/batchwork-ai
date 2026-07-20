@@ -3,7 +3,7 @@ title: Command-line interface
 description: Install, submit, monitor, recover, and automate provider-native batches.
 ---
 
-The installed `batchwork` command operates one provider-native batch at a time. It exposes the same canonical text, embedding, and image request models as the Python API; it is not a scheduler or multi-batch workflow engine.
+The `batchwork` command lets you submit and manage provider-native batches from the terminal, with no Python required. It works one batch at a time, uses the same canonical text, embedding, and image request models as the Python API, and produces stable JSON output that scripts and coding agents can rely on. It is not a scheduler or multi-batch workflow engine.
 
 ## Installation
 
@@ -12,7 +12,7 @@ uv tool install batchwork-ai
 batchwork --version
 ```
 
-For an approved one-shot invocation:
+To run it once without installing:
 
 ```console
 uvx --from batchwork-ai batchwork --help
@@ -39,7 +39,7 @@ Use the immutable `bw_...` record ID printed by submission for durable automatio
 
 ## Agent quick start
 
-Global controls are root-only and must precede the command:
+Coding agents and pipelines get the same lifecycle with deterministic machine output. The [Agent Skill](/docs/installation#install-the-agent-skill) teaches this contract to agents automatically. Global controls are root-only and must precede the command:
 
 ```console
 batchwork --jsonl --quiet run text requests.jsonl \

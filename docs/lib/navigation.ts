@@ -13,6 +13,7 @@ export const footerSections: FooterSection[] = [
     links: [
       { href: "/docs", label: "Overview" },
       { href: "/docs/installation", label: "Installation" },
+      { href: "/docs/cli", label: "Command-line interface" },
       { href: "/docs/configuration", label: "Configuration" },
       { href: "/docs/examples", label: "Examples" },
     ],

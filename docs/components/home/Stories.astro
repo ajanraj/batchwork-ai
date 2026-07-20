@@ -8,6 +8,7 @@ const stories = [
     description: "Choose a provider and model, pass your requests, and get a BatchJob back as soon as the provider accepts the batch.",
     href: "/docs/guides/jobs",
     file: "submit.py",
+    lang: "python",
     code: `from batchwork import BatchRequest, Batchwork
 
 requests = [
@@ -33,6 +34,7 @@ print(job.id, job.provider, job.status)`,
     description: "Provider output may be unordered and can contain both successes and failures. Batchwork gives every item the same status and result shape.",
     href: "/docs/guides/results",
     file: "results.py",
+    lang: "python",
     code: `await job.wait(timeout=3600)
 
 async for result in job.results():
@@ -52,11 +54,31 @@ async for result in job.results():
             await mark_unfinished(result.custom_id)`,
   },
   {
+    eyebrow: "Terminal and agents",
+    title: "Run the same batches without writing Python.",
+    description:
+      "The batchwork CLI ships in the same package. You get readable summaries in the terminal; your scripts and coding agents get schema-versioned JSON, stable exit codes, and a local registry for resuming jobs. An Agent Skill teaches agents to drive it safely.",
+    href: "/docs/cli",
+    file: "terminal",
+    lang: "console",
+    code: `uv tool install batchwork-ai
+
+# Submit a file of prompts and check on it later
+batchwork submit text prompts.txt --model openai/gpt-5
+batchwork wait BW_RECORD_ID --timeout 2h
+batchwork results BW_RECORD_ID
+
+# Machine mode for scripts and coding agents
+batchwork --jsonl --quiet run text requests.jsonl \\
+  --model openai/gpt-5`,
+  },
+  {
     eyebrow: "Production",
     title: "Poll jobs outside your request handler.",
     description: "Store tracked jobs, run the poller from a worker or cron, and send a signed webhook when a batch finishes. OpenAI's native webhooks use the same completion path.",
     href: "/docs/guides/server",
     file: "worker.py",
+    lang: "python",
     code: `from batchwork import (
     BatchPoller,
     ProviderCredentials,
@@ -96,7 +118,7 @@ result = await poller.tick()`,
           <p>{story.description}</p>
           <a href={story.href}>Read the guide <span aria-hidden="true">→</span></a>
         </div>
-        <CodePanel code={story.code} title={story.file} />
+        <CodePanel code={story.code} title={story.file} lang={story.lang} />
       </article>
     ))}
   </div>

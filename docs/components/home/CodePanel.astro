@@ -4,11 +4,12 @@ import CodeBlock from "blume/components/content/CodeBlock.astro";
 interface Props {
   code: string;
   title: string;
+  lang?: string;
 }
 
-const { code, title } = Astro.props;
+const { code, title, lang = "python" } = Astro.props;
 ---
 
 <div class="min-w-0 max-w-full text-left">
-  <CodeBlock code={code} lang="python" title={title} />
+  <CodeBlock code={code} lang={lang} title={title} />
 </div>
