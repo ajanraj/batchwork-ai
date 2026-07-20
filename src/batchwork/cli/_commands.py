@@ -359,41 +359,80 @@ def _fail_output(
     resolved: ResolvedJob | None = None,
     *,
     records_emitted: int = 0,
+    materializer: ImageMaterializer | None = None,
 ) -> NoReturn:
     if isinstance(error, BrokenPipeError):
         raise QuietBrokenPipe from None
+    failure = output_failure(
+        FailureContext(
+            operation=operation,
+            provider=resolved.provider if resolved is not None else None,
+            job=resolved.machine_job if resolved is not None else None,
+            routing_fingerprint=(resolved.machine_fingerprint if resolved is not None else None),
+        ),
+        records_emitted=records_emitted,
+    )
     _emit_failure(
-        output_failure(
-            FailureContext(
-                operation=operation,
-                provider=resolved.provider if resolved is not None else None,
-                job=resolved.machine_job if resolved is not None else None,
-                routing_fingerprint=(
-                    resolved.machine_fingerprint if resolved is not None else None
-                ),
-            ),
-            records_emitted=records_emitted,
+        CliFailure(
+            _partial_error_envelope(
+                failure,
+                materializer=materializer,
+                records_emitted=records_emitted,
+            )
         ),
         mode,
     )
 
 
-def _fail_unsuccessful(result: LifecycleResult, operation: str, mode: OutputMode) -> None:
+def _partial_error_envelope(
+    failure: CliFailure,
+    *,
+    materializer: ImageMaterializer | None,
+    records_emitted: int = 0,
+) -> ErrorEnvelope:
+    detail = failure.envelope.error
+    emitted = max(records_emitted, detail.records_emitted or 0)
+    updates: dict[str, object] = {}
+    if emitted:
+        updates["records_emitted"] = emitted
+    if materializer is not None:
+        updates["materialized_images"] = len(materializer.entries)
+        updates["materialized_bytes"] = materializer.byte_count
+    if detail.partial_output or emitted or (materializer is not None and materializer.entries):
+        updates["partial_output"] = True
+    return ErrorEnvelope(error=detail.model_copy(update=updates))
+
+
+def _fail_unsuccessful(
+    result: LifecycleResult,
+    operation: str,
+    mode: OutputMode,
+    *,
+    materializer: ImageMaterializer | None = None,
+    records_emitted: int = 0,
+) -> None:
     if not unsuccessful(result):
         return
     resolved = result.resolved
+    failure = job_state_failure(
+        result.snapshot.status,
+        FailureContext(
+            operation=operation,
+            provider=resolved.provider,
+            job=resolved.machine_job,
+            routing_fingerprint=resolved.machine_fingerprint,
+        ),
+        item_successes=result.item_successes,
+        item_failures=result.item_failures,
+        recovery_command=_recovery_command("status", resolved),
+    )
     _emit_failure(
-        job_state_failure(
-            result.snapshot.status,
-            FailureContext(
-                operation=operation,
-                provider=resolved.provider,
-                job=resolved.machine_job,
-                routing_fingerprint=resolved.machine_fingerprint,
-            ),
-            item_successes=result.item_successes,
-            item_failures=result.item_failures,
-            recovery_command=_recovery_command("status", resolved),
+        CliFailure(
+            _partial_error_envelope(
+                failure,
+                materializer=materializer,
+                records_emitted=records_emitted,
+            )
         ),
         mode,
     )
@@ -720,20 +759,25 @@ def _run_submission(
     except LifecycleFailure as failure:
         if spool is not None:
             spool.close()
-        if records_emitted:
-            detail = failure.envelope.error
-            failure = LifecycleFailure(
-                ErrorEnvelope(
-                    error=detail.model_copy(
-                        update={
-                            "partial_output": True,
-                            "records_emitted": detail.records_emitted or records_emitted,
-                        }
-                    )
-                )
+        failure = LifecycleFailure(
+            _partial_error_envelope(
+                failure,
+                materializer=materializer,
+                records_emitted=records_emitted,
             )
+        )
         _fail_lifecycle(failure, mode)
         return
+    except CliFailure as failure:
+        if spool is not None:
+            spool.close()
+        raise CliFailure(
+            _partial_error_envelope(
+                failure,
+                materializer=materializer,
+                records_emitted=records_emitted,
+            )
+        ) from failure
     except OSError as error:
         if spool is not None:
             spool.close()
@@ -743,6 +787,7 @@ def _run_submission(
             "run",
             prepared_resolved,
             records_emitted=records_emitted,
+            materializer=materializer,
         )
     if mode is OutputMode.JSON:
         if spool is None:
@@ -752,13 +797,19 @@ def _run_submission(
                 spool.set_materialization(materializer.summary())
             spool.publish()
         except OSError as error:
-            _fail_output(error, mode, "run", waited.resolved)
+            _fail_output(error, mode, "run", waited.resolved, materializer=materializer)
         finally:
             spool.close()
     elif mode is OutputMode.HUMAN:
         click.echo(render_snapshot(waited, mode), nl=False)
         click.echo(render_results(collected, mode), nl=False)
-    _fail_unsuccessful(collected, "run", mode)
+    _fail_unsuccessful(
+        collected,
+        "run",
+        mode,
+        materializer=materializer,
+        records_emitted=records_emitted,
+    )
 
 
 @cli.group(no_args_is_help=True)
@@ -1313,8 +1364,23 @@ def results(
         )
         retrieval_complete = True
     except LifecycleFailure as failure:
+        failure = LifecycleFailure(
+            _partial_error_envelope(
+                failure,
+                materializer=materializer,
+                records_emitted=records_emitted,
+            )
+        )
         _fail_lifecycle(failure, mode)
         return
+    except CliFailure as failure:
+        raise CliFailure(
+            _partial_error_envelope(
+                failure,
+                materializer=materializer,
+                records_emitted=records_emitted,
+            )
+        ) from failure
     except OSError as error:
         _fail_output(
             error,
@@ -1322,6 +1388,7 @@ def results(
             "results",
             prepared_resolved,
             records_emitted=records_emitted,
+            materializer=materializer,
         )
     finally:
         if spool is not None and not retrieval_complete:
@@ -1334,7 +1401,7 @@ def results(
                 spool.set_materialization(materializer.summary())
             spool.publish()
         except OSError as error:
-            _fail_output(error, mode, "results", result.resolved)
+            _fail_output(error, mode, "results", result.resolved, materializer=materializer)
         finally:
             spool.close()
     elif mode is not OutputMode.JSONL:
@@ -1348,7 +1415,13 @@ def results(
                 result.item_failures,
             )
         click.echo(render_results(result, mode), nl=False)
-    _fail_unsuccessful(result, "results", mode)
+    _fail_unsuccessful(
+        result,
+        "results",
+        mode,
+        materializer=materializer,
+        records_emitted=records_emitted,
+    )
 
 
 @cli.command()

@@ -75,6 +75,7 @@ def _failure(
                 exit_code=8,
                 retryable=False,
                 operation=operation,
+                partial_output=(True if materialized_images or materialized_bytes else None),
                 materialized_images=materialized_images,
                 materialized_bytes=materialized_bytes,
             )
@@ -108,7 +109,6 @@ def prepare_output_directory(path: Path, *, operation: str) -> Path:
                 )
         else:
             target.mkdir(mode=0o700, parents=False)
-        os.chmod(target, 0o700)
     except CliFailure:
         raise
     except OSError as error:
@@ -172,13 +172,16 @@ class ImageMaterializer:
                     raise ValueError(
                         f'provider returned non-image media type "{resolved.media_type}"'
                     )
+                extension = self._extension(resolved.data, resolved.media_type)
                 if self.byte_count + len(resolved.data) > MAX_AGGREGATE_MEDIA_BYTES:
                     raise ValueError(
                         "materialized images exceed the "
                         f"{MAX_AGGREGATE_MEDIA_BYTES} byte aggregate limit"
                     )
                 digest = hashlib.sha256(resolved.data).hexdigest()
-                filename = self._filename(result.custom_id, digest, index, resolved.media_type)
+                filename = self._filename(result.custom_id, index, extension)
+                if (self.output_dir / filename).exists():
+                    raise ValueError(f'completed image "{filename}" already exists')
                 self._atomic_write(self.output_dir / filename, resolved.data)
                 entry = ImageManifestEntry(
                     path=filename,
@@ -210,13 +213,29 @@ class ImageMaterializer:
     def summary(self) -> Materialization:
         return Materialization(output_dir=str(self.output_dir), images=list(self.entries))
 
-    def _filename(self, custom_id: str, digest: str, index: int, media_type: str) -> str:
+    def _filename(self, custom_id: str, index: int, extension: str) -> str:
         safe = _SAFE_FILENAME.sub("-", custom_id).strip(" .-_") or "image"
-        safe = safe[:80]
-        if safe.casefold() in _WINDOWS_RESERVED:
+        safe = safe[:80].rstrip(" .-_") or "image"
+        if safe.split(".", 1)[0].casefold() in _WINDOWS_RESERVED:
             safe = f"_{safe}"
-        extension = _EXTENSIONS.get(media_type, "bin")
-        return f"{safe}-{digest[:12]}-{index}.{extension}"
+        custom_id_hash = hashlib.sha256(custom_id.encode()).hexdigest()[:12]
+        return f"{safe}--{custom_id_hash}--{index}.{extension}"
+
+    def _extension(self, data: bytes, media_type: str) -> str:
+        detected: str | None = None
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            detected = "image/png"
+        elif data.startswith(b"\xff\xd8\xff"):
+            detected = "image/jpeg"
+        elif data.startswith((b"GIF87a", b"GIF89a")):
+            detected = "image/gif"
+        elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            detected = "image/webp"
+        if detected is None and media_type in _EXTENSIONS:
+            raise ValueError(
+                f'provider returned bytes that do not match declared type "{media_type}"'
+            )
+        return _EXTENSIONS.get(detected or media_type, "bin")
 
     def _atomic_write(self, path: Path, data: bytes) -> None:
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=self.output_dir)
