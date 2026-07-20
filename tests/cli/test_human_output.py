@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime
 
 from batchwork.cli._contract import ImageManifestEntry, Job, Materialization
 from batchwork.cli._human import (
@@ -218,6 +219,31 @@ def test_human_registry_table_never_truncates_the_only_usable_selector() -> None
     assert "nightly" in named_output
     assert _RECORD_ID in named_output
     assert "RECORD" in named_output
+
+
+def test_human_registry_table_shows_submitted_and_completed_times() -> None:
+    submitted = datetime(2026, 7, 20, 16, 41, tzinfo=UTC)
+    completed = datetime(2026, 7, 20, 16, 44, tzinfo=UTC)
+    job = _job().model_copy(update={"provider_created_at": submitted, "completed_at": completed})
+    route = RegistryRoute(
+        fingerprint=_FINGERPRINT,
+        api_key_env="OPENAI_API_KEY",
+        base_url=None,
+        headers={},
+        header_env={},
+    )
+
+    wide = human_table([RegistryJob(job=job, route=route)], width=160)
+    assert "SUBMITTED" in wide and "COMPLETED" in wide
+    assert "2026-07-20 16:41Z" in wide
+    assert "2026-07-20 16:44Z" in wide
+
+    narrow = human_table([RegistryJob(job=job, route=route)], width=24)
+    assert "Submitted  2026-07-20 16:41Z" in narrow
+    assert "Completed  2026-07-20 16:44Z" in narrow
+
+    pending = human_table([RegistryJob(job=_job(), route=route)], width=24)
+    assert "Completed  -" in pending
 
 
 def _root(*, quiet: bool = False, progress: bool = False, color: bool | None = None) -> RootOptions:

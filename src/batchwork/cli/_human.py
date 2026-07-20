@@ -7,6 +7,7 @@ import re
 import shutil
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
 from urllib.parse import urlsplit, urlunsplit
@@ -287,6 +288,12 @@ def human_error(error: ErrorDetail) -> str:
     return f"Error [{error.code}]\n  {message}{guidance}{recovery}\n"
 
 
+def _table_time(value: datetime | None) -> str:
+    if value is None:
+        return "-"
+    return value.astimezone(UTC).strftime("%Y-%m-%d %H:%MZ")
+
+
 def human_table(records: Sequence[RegistryJob], *, width: int | None = None) -> str:
     if not records:
         return "No local jobs.\n"
@@ -298,11 +305,13 @@ def human_table(records: Sequence[RegistryJob], *, width: int | None = None) -> 
             blocks.append(
                 "\n".join(
                     (
-                        f"Selector  {job.name or job.record_id}",
-                        f"Record    {job.record_id or '-'}",
-                        f"Provider  {job.provider.value}",
-                        f"Status    {job.status.value if job.status else '-'}",
-                        f"Direct    {job.provider_reference}",
+                        f"Selector   {job.name or job.record_id}",
+                        f"Record     {job.record_id or '-'}",
+                        f"Provider   {job.provider.value}",
+                        f"Status     {job.status.value if job.status else '-'}",
+                        f"Submitted  {_table_time(job.provider_created_at or job.registered_at)}",
+                        f"Completed  {_table_time(job.completed_at or job.terminal_at)}",
+                        f"Direct     {job.provider_reference}",
                     )
                 )
             )
@@ -312,8 +321,11 @@ def human_table(records: Sequence[RegistryJob], *, width: int | None = None) -> 
         len("SELECTOR"),
         *(len(record.job.name or record.job.record_id or "") for record in records),
     )
-    selector_width = min(selector_width, max(16, terminal_width - 82))
-    lines = [f"{'SELECTOR':<{selector_width}}  {'RECORD':<35}  PROVIDER   STATUS       DIRECT"]
+    selector_width = min(selector_width, max(16, terminal_width - 120))
+    lines = [
+        f"{'SELECTOR':<{selector_width}}  {'RECORD':<35}  PROVIDER   STATUS       "
+        f"{'SUBMITTED':<17}  {'COMPLETED':<17}  DIRECT"
+    ]
     for record in records:
         job = record.job
         selector = job.name or job.record_id or job.provider_reference
@@ -321,7 +333,10 @@ def human_table(records: Sequence[RegistryJob], *, width: int | None = None) -> 
         lines.append(
             f"{selector:<{selector_width}}  {(job.record_id or '-'):<35}  "
             f"{job.provider.value:<9}  "
-            f"{(job.status.value if job.status else '-'):<11}  {job.provider_reference}"
+            f"{(job.status.value if job.status else '-'):<11}  "
+            f"{_table_time(job.provider_created_at or job.registered_at):<17}  "
+            f"{_table_time(job.completed_at or job.terminal_at):<17}  "
+            f"{job.provider_reference}"
         )
     return "\n".join(lines) + "\n"
 
