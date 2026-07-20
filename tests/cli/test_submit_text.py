@@ -1250,3 +1250,28 @@ def test_submit_text_human_output_contains_copyable_selector(
     assert selector.startswith("bw_")
     assert f"batchwork status {selector}" in result.stdout
     assert result.stderr == ""
+
+
+def test_human_usage_error_does_not_echo_malformed_header_value(tmp_path: Path) -> None:
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"hello"}\n')
+    secret = "private-header-value"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--human",
+            "submit",
+            "text",
+            str(source),
+            "--model",
+            "openai/gpt-test",
+            "--header",
+            secret,
+        ],
+        env={"OPENAI_API_KEY": "credential"},
+    )
+
+    assert result.exit_code == 2
+    assert secret not in result.stderr
+    assert "value omitted" in result.stderr

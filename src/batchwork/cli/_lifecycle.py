@@ -32,6 +32,7 @@ from ._config import ConfigError, ProviderConfig, load_config, registry_path, se
 from ._contract import (
     ErrorDetail,
     ErrorEnvelope,
+    Materialization,
     Modality,
     Recovery,
     ResultEnvelope,
@@ -48,6 +49,7 @@ from ._failures import (
     job_state_failure,
     provider_failure,
 )
+from ._human import human_error, human_results, human_snapshot
 from ._registry import (
     RegistryIntegrityError,
     RegistryJob,
@@ -639,6 +641,7 @@ async def wait_job(
     *,
     poll_interval: float = 15.0,
     timeout_seconds: float | None = None,
+    on_progress: Callable[[BatchSnapshot], None] | None = None,
 ) -> LifecycleResult:
     resolved = resolve_job(root, options)
     active = _activate("wait", resolved)
@@ -655,6 +658,8 @@ async def wait_job(
                     snapshot = job.snapshot
                     active.snapshot = snapshot
                     _persist_or_fail("wait", resolved, snapshot)
+                    if on_progress is not None:
+                        on_progress(snapshot)
                     while not is_terminal_status(snapshot.status):
                         if timeout_seconds is None:
                             sleep_for = poll_interval
@@ -665,6 +670,8 @@ async def wait_job(
                         snapshot = await _retry_read(job.poll, deadline=deadline)
                         active.snapshot = snapshot
                         _persist_or_fail("wait", resolved, snapshot)
+                        if on_progress is not None:
+                            on_progress(snapshot)
         except (InterruptionRequested, TerminationRequested) as error:
             raise _signal_failure(error, "wait", resolved, snapshot) from None
         except Exception as error:
@@ -906,7 +913,13 @@ def unsuccessful(result: LifecycleResult) -> bool:
     )
 
 
-def render_snapshot(result: LifecycleResult, mode: OutputMode) -> str:
+def render_snapshot(
+    result: LifecycleResult,
+    mode: OutputMode,
+    *,
+    title: str = "Job status",
+    color: bool = False,
+) -> str:
     if mode in {OutputMode.JSON, OutputMode.JSONL}:
         return serialize_envelope(
             SnapshotEnvelope(
@@ -915,16 +928,16 @@ def render_snapshot(result: LifecycleResult, mode: OutputMode) -> str:
                 snapshot=result.snapshot,
             )
         )
-    counts = result.snapshot.request_counts
-    return (
-        f"Job: {result.resolved.machine_job}\n"
-        f"Provider: {result.snapshot.provider.value}\n"
-        f"Status: {result.snapshot.status.value}\n"
-        f"Requests: {counts.completed}/{counts.total} complete, {counts.failed} failed\n"
-    )
+    return human_snapshot(result, title=title, color=color)
 
 
-def render_results(result: LifecycleResult, mode: OutputMode) -> str:
+def render_results(
+    result: LifecycleResult,
+    mode: OutputMode,
+    *,
+    materialization: Materialization | None = None,
+    color: bool = False,
+) -> str:
     items = result.results or []
     if mode is OutputMode.JSON:
         return serialize_envelope(
@@ -945,22 +958,14 @@ def render_results(result: LifecycleResult, mode: OutputMode) -> str:
             )
             for item in items
         )
-    lines = [f"Results for {result.resolved.machine_job}: {len(items)}"]
-    for item in items:
-        if item.embedding is not None:
-            preview = f" — {len(item.embedding)} dimensions"
-        elif item.images is not None:
-            preview = f" — {len(item.images)} image(s)"
-        else:
-            preview = f" — {item.text[:80]}" if item.text else ""
-        lines.append(f"{item.custom_id}: {item.status.value}{preview}")
-    return "\n".join(lines) + "\n"
+    return human_results(
+        result,
+        materialization=materialization,
+        color=color,
+    )
 
 
 def render_lifecycle_error(failure: LifecycleFailure, mode: OutputMode) -> str:
     if mode in {OutputMode.JSON, OutputMode.JSONL}:
         return serialize_envelope(failure.envelope)
-    error = failure.envelope.error
-    command = error.recovery.command if error.recovery else None
-    recovery = f"\nRecovery: {' '.join(command)}" if command else ""
-    return f"Error: {error.message}{recovery}\n"
+    return human_error(failure.envelope.error)

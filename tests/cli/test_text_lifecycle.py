@@ -15,6 +15,11 @@ from typing import ClassVar
 
 import pytest
 
+from batchwork.cli._commands import CLI_HELP_PATHS
+
+if os.name != "nt":
+    import pty
+
 
 class _LifecycleHandler(BaseHTTPRequestHandler):
     requests: ClassVar[list[tuple[str, str]]] = []
@@ -174,6 +179,266 @@ def _direct(base_url: str) -> list[str]:
         "--api-key-env",
         "TEST_OPENAI_KEY",
     ]
+
+
+def _run_with_tty(
+    arguments: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    tty_stream: str,
+) -> tuple[int, str, str]:
+    try:
+        master, slave = pty.openpty()
+    except OSError as error:
+        pytest.skip(f"pseudo-terminal unavailable: {error}")
+    stdout: int | subprocess.PIPE = slave if tty_stream == "stdout" else subprocess.PIPE
+    stderr: int | subprocess.PIPE = slave if tty_stream == "stderr" else subprocess.PIPE
+    process = subprocess.Popen(
+        arguments,
+        cwd=cwd,
+        env=env,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    os.close(slave)
+    chunks: list[bytes] = []
+    while True:
+        try:
+            chunk = os.read(master, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+    os.close(master)
+    piped_stdout = process.stdout.read() if process.stdout is not None else b""
+    piped_stderr = process.stderr.read() if process.stderr is not None else b""
+    returncode = process.wait(timeout=5)
+    tty_output = b"".join(chunks)
+    if tty_stream == "stdout":
+        piped_stdout = tty_output
+    else:
+        piped_stderr = tty_output
+    return returncode, piped_stdout.decode(), piped_stderr.decode()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX pseudo-terminal behavior")
+@pytest.mark.parametrize("path", CLI_HELP_PATHS)
+def test_every_installed_command_help_path_has_clean_pseudo_terminal_behavior(
+    path: tuple[str, ...],
+    tmp_path: Path,
+) -> None:
+    environment = _environment()
+    environment["BATCHWORK_CONFIG"] = str(tmp_path / "missing.toml")
+    environment["BATCHWORK_REGISTRY"] = str(tmp_path / "missing.sqlite3")
+
+    returncode, stdout, stderr = _run_with_tty(
+        [_batchwork(), *path, "--help"],
+        cwd=tmp_path,
+        env=environment,
+        tty_stream="stdout",
+    )
+
+    assert returncode == 0, stderr
+    assert stdout.startswith("Usage: batchwork")
+    assert stderr == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX pseudo-terminal behavior")
+def test_installed_status_defaults_to_human_output_on_interactive_stdout(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, _ = lifecycle_provider
+
+    returncode, stdout, stderr = _run_with_tty(
+        [_batchwork(), "status", *_direct(base_url)],
+        cwd=tmp_path,
+        env=_environment(),
+        tty_stream="stdout",
+    )
+
+    assert returncode == 0, stderr
+    assert "Job status" in stdout
+    assert "openai:batch_123" in stdout
+    assert not stdout.lstrip().startswith("{")
+    assert stderr == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX pseudo-terminal behavior")
+def test_installed_creation_and_lifecycle_commands_use_human_terminal_output(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    source = tmp_path / "requests.jsonl"
+    source.write_text('{"prompt":"hello"}\n')
+    route = [
+        "--model",
+        "openai/gpt-test",
+        "--base-url",
+        base_url,
+        "--api-key-env",
+        "TEST_OPENAI_KEY",
+    ]
+
+    commands = [
+        (
+            [
+                _batchwork(),
+                "--registry",
+                str(tmp_path / "submit.sqlite3"),
+                "submit",
+                "text",
+                str(source),
+                *route,
+            ],
+            "Job submitted",
+        ),
+        ([_batchwork(), "results", *_direct(base_url)], "Results"),
+        ([_batchwork(), "cancel", *_direct(base_url)], "Job completed"),
+    ]
+    for arguments, expected in commands:
+        returncode, stdout, stderr = _run_with_tty(
+            arguments,
+            cwd=tmp_path,
+            env=_environment(),
+            tty_stream="stdout",
+        )
+        assert returncode == 0, stderr
+        assert expected in stdout
+        assert not stdout.lstrip().startswith("{")
+        assert stderr == ""
+
+    handler.statuses = ["in_progress", "completed", "completed"]
+    returncode, stdout, stderr = _run_with_tty(
+        [
+            _batchwork(),
+            "--registry",
+            str(tmp_path / "run.sqlite3"),
+            "run",
+            "text",
+            str(source),
+            *route,
+            "--poll-interval",
+            ".01",
+        ],
+        cwd=tmp_path,
+        env=_environment(),
+        tty_stream="stdout",
+    )
+    assert returncode == 0, stderr
+    assert "Job submitted" in stdout
+    assert "Job completed" in stdout
+    assert "Results" in stdout
+    assert stderr == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX pseudo-terminal behavior")
+def test_installed_local_commands_cover_terminal_and_redirected_stream_contracts(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "registry.sqlite3"
+    common = [_batchwork(), "--registry", str(registry)]
+    success_commands = [
+        [*common, "config", "path"],
+        [*common, "config", "validate"],
+        [*common, "config", "show"],
+        [*common, "list"],
+        [*common, "prune", "--older-than", "1d"],
+        [*common, "registry", "reset", "--backup"],
+        [*common, "registry", "check"],
+    ]
+
+    for arguments in success_commands:
+        returncode, stdout, stderr = _run_with_tty(
+            arguments,
+            cwd=tmp_path,
+            env=_environment(),
+            tty_stream="stdout",
+        )
+        assert returncode == 0, stderr
+        assert stdout.strip()
+        assert not stdout.lstrip().startswith("{")
+        assert stderr == ""
+
+        redirected = subprocess.run(
+            arguments,
+            cwd=tmp_path,
+            env=_environment(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert redirected.returncode == 0, redirected.stderr
+        assert json.loads(redirected.stdout)["schema_version"] == 1
+        assert redirected.stderr == ""
+
+    missing = [*common, "forget", "missing-job"]
+    returncode, stdout, stderr = _run_with_tty(
+        missing,
+        cwd=tmp_path,
+        env=_environment(),
+        tty_stream="stdout",
+    )
+    assert returncode == 8
+    assert stdout == ""
+    assert "Error" in stderr
+
+    redirected = subprocess.run(
+        missing,
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert redirected.returncode == 8
+    assert redirected.stdout == ""
+    assert json.loads(redirected.stderr)["type"] == "error"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX pseudo-terminal behavior")
+def test_installed_wait_progress_uses_interactive_stderr_only(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    handler.statuses = ["in_progress", "in_progress", "completed"]
+
+    returncode, stdout, stderr = _run_with_tty(
+        [_batchwork(), "wait", *_direct(base_url), "--poll-interval", ".01"],
+        cwd=tmp_path,
+        env=_environment(),
+        tty_stream="stderr",
+    )
+
+    assert returncode == 0, stderr
+    assert json.loads(stdout)["type"] == "snapshot"
+    assert "Waiting  in_progress  0/1 finished" in stderr
+    assert "Waiting  completed  1/1 finished" in stderr
+    assert stderr.count("Waiting  in_progress") == 1
+
+
+def test_installed_results_redirected_default_is_jsonl(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, _ = lifecycle_provider
+
+    result = subprocess.run(
+        [_batchwork(), "results", *_direct(base_url)],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert [json.loads(line)["type"] for line in result.stdout.splitlines()] == ["result"]
+    assert result.stderr == ""
 
 
 @pytest.mark.parametrize(("terminal", "exit_code"), (("completed", 0), ("failed", 6)))
@@ -514,7 +779,7 @@ def test_wait_retry_after_cannot_extend_local_deadline(
             "wait",
             *_direct(base_url),
             "--timeout",
-            ".05s",
+            ".5s",
         ],
         cwd=tmp_path,
         env=_environment(),

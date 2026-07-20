@@ -734,6 +734,40 @@ def test_installed_image_lifecycle_for_each_provider(
     source.write_text('{"prompt":"a red square"}\n')
     output_dir = tmp_path / f"{case.provider}-images"
     with _provider_server(case, image=True) as (base_url, handler):
+        submitted = _run(
+            tmp_path,
+            "submit",
+            "images",
+            str(source),
+            "--model",
+            f"{case.provider}/{case.model}",
+            "--base-url",
+            base_url,
+            "--api-key-env",
+            "TEST_PROVIDER_KEY",
+        )
+        human_submitted = subprocess.run(
+            [
+                _installed_batchwork(),
+                "--human",
+                "--registry",
+                str(tmp_path / f"{case.provider}-human-images.sqlite3"),
+                "submit",
+                "images",
+                str(source),
+                "--model",
+                f"{case.provider}/{case.model}",
+                "--base-url",
+                base_url,
+                "--api-key-env",
+                "TEST_PROVIDER_KEY",
+            ],
+            cwd=tmp_path,
+            env=_environment(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         ran = _run(
             tmp_path,
             "run",
@@ -751,6 +785,13 @@ def test_installed_image_lifecycle_for_each_provider(
             str(output_dir),
         )
 
+        assert submitted.returncode == 0, submitted.stderr
+        assert json.loads(submitted.stdout)["job"]["modality"] == "images"
+        assert submitted.stderr == ""
+        assert human_submitted.returncode == 0, human_submitted.stderr
+        assert "Job submitted" in human_submitted.stdout
+        assert _PNG_BASE64 not in human_submitted.stdout
+        assert human_submitted.stderr == ""
         assert ran.returncode == 0, ran.stderr
         envelope = json.loads(ran.stdout)
         assert envelope["job"]["modality"] == "images"

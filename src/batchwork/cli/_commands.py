@@ -52,6 +52,7 @@ from ._failures import (
     output_failure,
     usage_failure,
 )
+from ._human import ProgressReporter, human_error, human_table, terminal_color
 from ._input import INPUT_FORMATS
 from ._lifecycle import (
     LifecycleFailure,
@@ -256,10 +257,7 @@ def _emit_failure(failure: CliFailure, mode: OutputMode) -> NoReturn:
     if mode in {OutputMode.JSON, OutputMode.JSONL}:
         output = serialize_envelope(failure.envelope)
     else:
-        detail = failure.envelope.error
-        command = detail.recovery.command if detail.recovery is not None else None
-        recovery = f"\nRecovery: {' '.join(command)}" if command else ""
-        output = f"Error: {detail.message}{recovery}\n"
+        output = human_error(failure.envelope.error)
     click.echo(output, nl=False, err=True)
     raise click.exceptions.Exit(failure.exit_code) from failure
 
@@ -304,13 +302,6 @@ class Duration(click.ParamType):
 
 POSITIVE_FINITE_FLOAT = PositiveFiniteFloat()
 DURATION = Duration()
-
-
-def _foundation_only() -> None:
-    raise click.UsageError(
-        "This development build provides CLI help and schema contracts only; "
-        "use --help to inspect the available command surface."
-    )
 
 
 def _output_mode(root: RootOptions, *, streaming: bool = False) -> OutputMode:
@@ -482,7 +473,7 @@ def _creation_options(function: CommandFunction) -> CommandFunction:
     options = (
         click.option("--model", metavar="PROVIDER/MODEL", help="Provider-qualified model."),
         click.option("--format", "input_format", type=FORMAT, help="Input transport format."),
-        click.option("--name", help="Local registry alias."),
+        click.option("--name", metavar="NAME", help="Save a shell-safe local alias."),
         click.option(
             "--batch-metadata",
             metavar="KEY=VALUE",
@@ -499,11 +490,29 @@ def _creation_options(function: CommandFunction) -> CommandFunction:
             type=click.Path(path_type=Path, dir_okay=False),
             help="Read selected-provider options JSON; docs: https://batchwork.ajanraj.com/docs/providers/",
         ),
-        click.option("--allow-large-batch", is_flag=True),
-        click.option("--base-url", metavar="URL"),
-        click.option("--api-key-env", metavar="VARIABLE"),
-        click.option("--header", metavar="NAME=VALUE", multiple=True),
-        click.option("--header-env", metavar="NAME=VARIABLE", multiple=True),
+        click.option(
+            "--allow-large-batch",
+            is_flag=True,
+            help="Authorize work above the soft volume gate.",
+        ),
+        click.option("--base-url", metavar="URL", help="Use an explicit provider endpoint."),
+        click.option(
+            "--api-key-env",
+            metavar="ENV_VAR",
+            help="Read the provider credential from this variable.",
+        ),
+        click.option(
+            "--header",
+            metavar="NAME=VALUE",
+            multiple=True,
+            help="Repeatable non-secret literal provider header.",
+        ),
+        click.option(
+            "--header-env",
+            metavar="NAME=ENV_VAR",
+            multiple=True,
+            help="Repeatable secret provider header by variable name.",
+        ),
     )
     for option in reversed(options):
         function = option(function)
@@ -512,22 +521,40 @@ def _creation_options(function: CommandFunction) -> CommandFunction:
 
 def _text_options(function: CommandFunction) -> CommandFunction:
     options = (
-        click.option("--system", metavar="TEXT"),
-        click.option("--max-output-tokens", type=click.IntRange(min=1)),
-        click.option("--temperature", type=float),
-        click.option("--top-p", type=float),
-        click.option("--top-k", type=click.IntRange(min=1)),
-        click.option("--seed", type=int),
-        click.option("--frequency-penalty", type=float),
-        click.option("--presence-penalty", type=float),
-        click.option("--stop", metavar="TEXT", multiple=True),
+        click.option("--system", metavar="TEXT", help="Default system instruction."),
+        click.option(
+            "--max-output-tokens",
+            type=click.IntRange(min=1),
+            help="Default positive output-token limit.",
+        ),
+        click.option("--temperature", type=float, help="Default sampling temperature."),
+        click.option("--top-p", type=float, help="Default nucleus-sampling value."),
+        click.option(
+            "--top-k",
+            type=click.IntRange(min=1),
+            help="Default positive top-k sampling value.",
+        ),
+        click.option("--seed", type=int, help="Default deterministic seed when supported."),
+        click.option(
+            "--frequency-penalty",
+            type=float,
+            help="Default frequency penalty when supported.",
+        ),
+        click.option(
+            "--presence-penalty",
+            type=float,
+            help="Default presence penalty when supported.",
+        ),
+        click.option("--stop", metavar="TEXT", multiple=True, help="Repeatable stop sequence."),
         click.option(
             "--tool-choice",
             type=click.Choice(["auto", "none", "required"], case_sensitive=True),
+            help="Default tool-selection behavior.",
         ),
         click.option(
             "--endpoint",
             type=click.Choice(_TEXT_ENDPOINTS, case_sensitive=True),
+            help="Select the provider text endpoint.",
         ),
     )
     for option in reversed(options):
@@ -536,15 +563,27 @@ def _text_options(function: CommandFunction) -> CommandFunction:
 
 
 def _embedding_options(function: CommandFunction) -> CommandFunction:
-    return click.option("--dimensions", type=click.IntRange(min=1))(function)
+    return click.option(
+        "--dimensions",
+        type=click.IntRange(min=1),
+        help="Default positive embedding dimensions.",
+    )(function)
 
 
 def _image_options(function: CommandFunction) -> CommandFunction:
     options = (
-        click.option("--n", type=click.IntRange(min=1)),
-        click.option("--aspect-ratio", metavar="WIDTH:HEIGHT"),
-        click.option("--seed", type=int),
-        click.option("--size", metavar="WIDTHxHEIGHT"),
+        click.option("--n", type=click.IntRange(min=1), help="Default images per request."),
+        click.option(
+            "--aspect-ratio",
+            metavar="WIDTH:HEIGHT",
+            help="Default generated-image aspect ratio.",
+        ),
+        click.option("--seed", type=int, help="Default deterministic seed when supported."),
+        click.option(
+            "--size",
+            metavar="WIDTHxHEIGHT",
+            help="Default generated-image dimensions.",
+        ),
     )
     for option in reversed(options):
         function = option(function)
@@ -552,22 +591,47 @@ def _image_options(function: CommandFunction) -> CommandFunction:
 
 
 def _wait_options(function: CommandFunction) -> CommandFunction:
-    function = click.option("--timeout", type=DURATION, metavar="DURATION")(function)
-    return click.option("--poll-interval", type=POSITIVE_FINITE_FLOAT)(function)
+    function = click.option(
+        "--timeout",
+        type=DURATION,
+        metavar="DURATION",
+        help="Stop waiting locally after a positive s/m/h/d duration.",
+    )(function)
+    return click.option(
+        "--poll-interval",
+        type=POSITIVE_FINITE_FLOAT,
+        metavar="SECONDS",
+        help="Use this positive polling interval.",
+    )(function)
 
 
 def _direct_routing_options(function: CommandFunction) -> CommandFunction:
     options = (
-        click.option("--base-url", metavar="URL"),
-        click.option("--api-key-env", metavar="VARIABLE"),
-        click.option("--header", metavar="NAME=VALUE", multiple=True),
-        click.option("--header-env", metavar="NAME=VARIABLE", multiple=True),
-        click.option("--provider", type=PROVIDER),
-        click.option("--save", is_flag=True),
-        click.option("--name"),
+        click.option("--base-url", metavar="URL", help="Use an explicit provider endpoint."),
+        click.option(
+            "--api-key-env",
+            metavar="ENV_VAR",
+            help="Read the provider credential from this variable.",
+        ),
+        click.option(
+            "--header",
+            metavar="NAME=VALUE",
+            multiple=True,
+            help="Repeatable non-secret literal provider header.",
+        ),
+        click.option(
+            "--header-env",
+            metavar="NAME=ENV_VAR",
+            multiple=True,
+            help="Repeatable secret provider header by variable name.",
+        ),
+        click.option("--provider", type=PROVIDER, help="Qualify a bare provider job ID."),
+        click.option("--save", is_flag=True, help="Adopt a successful direct operation locally."),
+        click.option("--name", metavar="NAME", help="Local alias to create with --save."),
         click.option(
             "--modality",
             type=click.Choice(["text", "embeddings", "images"], case_sensitive=True),
+            help="Record the modality when adopting a direct job.",
         ),
     )
     for option in reversed(options):
@@ -591,9 +655,17 @@ def _selected_output_mode(human: bool, json_output: bool, jsonl: bool) -> Output
 
 
 @click.group(cls=ConfigAwareGroup, context_settings=CONTEXT_SETTINGS, no_args_is_help=True)
-@click.option("--config", type=click.Path(path_type=Path, dir_okay=False))
-@click.option("--registry", type=click.Path(path_type=Path, dir_okay=False))
-@click.option("--profile", metavar="NAME")
+@click.option(
+    "--config",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Use this configuration file.",
+)
+@click.option(
+    "--registry",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Use this local job registry.",
+)
+@click.option("--profile", metavar="NAME", help="Select a configuration profile.")
 @click.option("--human", is_flag=True, help="Force human-readable output.")
 @click.option("--json", "json_output", is_flag=True, help="Emit one buffered JSON document.")
 @click.option("--jsonl", is_flag=True, help="Emit newline-delimited JSON records.")
@@ -616,7 +688,14 @@ def cli(
     color_enabled: bool,
     no_color: bool,
 ) -> None:
-    """Submit and manage provider-native AI batch jobs."""
+    """Submit and manage provider-native AI batch jobs.
+
+    Interactive stdout uses human output. Redirected stdout uses JSON for
+    bounded commands and JSONL for streaming results and run.
+
+    Lifecycle JOB selectors may be a local alias, a bw_ record ID, a
+    provider:provider-job-id reference, or a bare ID with --provider.
+    """
     if color_enabled and no_color:
         raise click.UsageError("--color and --no-color are mutually exclusive.")
     color = True if color_enabled else False if no_color else None
@@ -632,8 +711,9 @@ def cli(
 
 
 def _show_submission(root: RootOptions, result: SubmissionResult) -> None:
-    mode = root.output_mode or (OutputMode.HUMAN if sys.stdout.isatty() else OutputMode.JSON)
-    click.echo(render_job(result.job, mode), nl=False)
+    mode = _output_mode(root)
+    color = terminal_color(root, mode, sys.stdout)
+    click.echo(render_job(result.job, mode, color=color), nl=False, color=color)
     if result.error is not None:
         click.echo(render_error(result.error, mode), nl=False, err=True)
         raise click.exceptions.Exit(result.error.error.exit_code)
@@ -664,20 +744,26 @@ def _run_submission(
     async def execute() -> tuple[LifecycleResult, LifecycleResult]:
         nonlocal spool, prepared_resolved, records_emitted
         submission = await submit(root, submit_options)
+        color = terminal_color(root, mode, sys.stdout)
         if mode is not OutputMode.JSON or submission.error is not None:
-            click.echo(render_job(submission.job, mode), nl=False)
+            click.echo(render_job(submission.job, mode, color=color), nl=False, color=color)
             records_emitted += 1
         if submission.error is not None:
             click.echo(render_error(submission.error, mode), nl=False, err=True)
             raise click.exceptions.Exit(submission.error.error.exit_code)
         selector = submission.job.record_id or submission.job.provider_reference
         lifecycle = LifecycleOptions(selector, None, None, (), (), None, False, None)
-        waited = await wait_job(
-            root,
-            lifecycle,
-            poll_interval=poll_interval or 15.0,
-            timeout_seconds=duration_seconds(timeout),
-        )
+        progress = ProgressReporter(root, mode)
+        try:
+            waited = await wait_job(
+                root,
+                lifecycle,
+                poll_interval=poll_interval or 15.0,
+                timeout_seconds=duration_seconds(timeout),
+                on_progress=progress.update,
+            )
+        finally:
+            progress.close()
         if mode is OutputMode.JSONL:
             click.echo(
                 serialize_envelope(
@@ -801,8 +887,27 @@ def _run_submission(
         finally:
             spool.close()
     elif mode is OutputMode.HUMAN:
-        click.echo(render_snapshot(waited, mode), nl=False)
-        click.echo(render_results(collected, mode), nl=False)
+        color = terminal_color(root, mode, sys.stdout)
+        click.echo(
+            render_snapshot(
+                waited,
+                mode,
+                title=f"Job {waited.snapshot.status.value}",
+                color=color,
+            ),
+            nl=False,
+            color=color,
+        )
+        click.echo(
+            render_results(
+                collected,
+                mode,
+                materialization=materializer.summary() if materializer is not None else None,
+                color=color,
+            ),
+            nl=False,
+            color=color,
+        )
     _fail_unsuccessful(
         collected,
         "run",
@@ -814,7 +919,7 @@ def _run_submission(
 
 @cli.group(no_args_is_help=True)
 def submit() -> None:
-    """Submit one provider-native batch and return immediately."""
+    """Submit one provider-native batch and return without polling."""
 
 
 @submit.command("text")
@@ -848,7 +953,11 @@ def submit_text(
     tool_choice: str | None,
     endpoint: str | None,
 ) -> None:
-    """Submit canonical text requests from SOURCE."""
+    """Submit text or message requests from SOURCE.
+
+    SOURCE is one regular file or "-" for explicit stdin. Stdin and unknown
+    extensions require --format.
+    """
     result = asyncio.run(
         execute_submit_text(
             root,
@@ -903,7 +1012,7 @@ def submit_embeddings(
     header_env: tuple[str, ...],
     dimensions: int | None,
 ) -> None:
-    """Submit canonical embedding requests from SOURCE."""
+    """Submit embedding requests from SOURCE."""
     result = asyncio.run(
         execute_submit_embeddings(
             root,
@@ -951,7 +1060,7 @@ def submit_images(
     seed: int | None,
     size: str | None,
 ) -> None:
-    """Submit canonical image requests from SOURCE."""
+    """Submit image-generation requests from SOURCE."""
     result = asyncio.run(
         execute_submit_images(
             root,
@@ -980,7 +1089,10 @@ def submit_images(
 
 @cli.group(no_args_is_help=True)
 def run() -> None:
-    """Submit, wait for, and retrieve one provider-native batch."""
+    """Submit one batch, wait for it, then retrieve available results.
+
+    Local timeout or interruption never cancels the provider job.
+    """
 
 
 @run.command("text")
@@ -1101,7 +1213,11 @@ def run_embeddings(
 
 @run.command("images")
 @click.argument("source", type=click.Path(path_type=Path, dir_okay=False, allow_dash=True))
-@click.option("--output-dir", type=click.Path(path_type=Path, file_okay=False))
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Materialize images into an absent or empty directory.",
+)
 @_creation_options
 @_image_options
 @_wait_options
@@ -1172,7 +1288,7 @@ def status(
     name: str | None,
     modality: Modality | None,
 ) -> None:
-    """Fetch one current snapshot for JOB."""
+    """Refresh and show one current snapshot for JOB."""
     mode = _output_mode(root)
     options = _lifecycle_options(
         job,
@@ -1191,7 +1307,12 @@ def status(
     except LifecycleFailure as failure:
         _fail_lifecycle(failure, mode)
         return
-    click.echo(render_snapshot(result, mode), nl=False)
+    color = terminal_color(root, mode, sys.stdout)
+    click.echo(
+        render_snapshot(result, mode, title="Job status", color=color),
+        nl=False,
+        color=color,
+    )
 
 
 @cli.command()
@@ -1213,7 +1334,11 @@ def wait(
     timeout: str | None,
     poll_interval: float | None,
 ) -> None:
-    """Wait locally until JOB reaches a terminal state."""
+    """Wait locally until JOB reaches a terminal state.
+
+    Timeout or interruption never cancels remote work; errors include a
+    copyable recovery command.
+    """
     mode = _output_mode(root)
     options = _lifecycle_options(
         job,
@@ -1227,6 +1352,7 @@ def wait(
         modality,
         "wait",
     )
+    progress = ProgressReporter(root, mode)
     try:
         result = asyncio.run(
             wait_job(
@@ -1234,18 +1360,35 @@ def wait(
                 options,
                 poll_interval=poll_interval or 15.0,
                 timeout_seconds=duration_seconds(timeout),
+                on_progress=progress.update,
             )
         )
     except LifecycleFailure as failure:
         _fail_lifecycle(failure, mode)
         return
-    click.echo(render_snapshot(result, mode), nl=False)
+    finally:
+        progress.close()
+    color = terminal_color(root, mode, sys.stdout)
+    click.echo(
+        render_snapshot(
+            result,
+            mode,
+            title=f"Job {result.snapshot.status.value}",
+            color=color,
+        ),
+        nl=False,
+        color=color,
+    )
     _fail_unsuccessful(result, "wait", mode)
 
 
 @cli.command()
 @click.argument("job")
-@click.option("--output-dir", type=click.Path(path_type=Path, file_okay=False))
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    help="Materialize image results into an absent or empty directory.",
+)
 @_direct_routing_options
 @click.pass_obj
 def results(
@@ -1261,7 +1404,7 @@ def results(
     name: str | None,
     modality: Modality | None,
 ) -> None:
-    """Retrieve available terminal results for JOB without waiting."""
+    """Retrieve available terminal results for JOB once, without waiting."""
     mode = _output_mode(root, streaming=True)
     options = _lifecycle_options(
         job,
@@ -1414,7 +1557,17 @@ def results(
                 result.item_successes,
                 result.item_failures,
             )
-        click.echo(render_results(result, mode), nl=False)
+        color = terminal_color(root, mode, sys.stdout)
+        click.echo(
+            render_results(
+                result,
+                mode,
+                materialization=materializer.summary() if materializer is not None else None,
+                color=color,
+            ),
+            nl=False,
+            color=color,
+        )
     _fail_unsuccessful(
         result,
         "results",
@@ -1459,20 +1612,35 @@ def cancel(
     except LifecycleFailure as failure:
         _fail_lifecycle(failure, mode)
         return
-    click.echo(render_snapshot(result, mode), nl=False)
+    color = terminal_color(root, mode, sys.stdout)
+    title = (
+        "Cancellation requested"
+        if result.snapshot.status in {BatchStatus.CANCELLING, BatchStatus.CANCELLED}
+        else f"Job {result.snapshot.status.value}"
+    )
+    click.echo(
+        render_snapshot(result, mode, title=title, color=color),
+        nl=False,
+        color=color,
+    )
 
 
 @cli.command("list")
-@click.option("--provider", type=PROVIDER)
-@click.option("--modality", type=click.Choice(["text", "embeddings", "images"]))
+@click.option("--provider", type=PROVIDER, help="Filter by provider.")
+@click.option(
+    "--modality",
+    type=click.Choice(["text", "embeddings", "images"]),
+    help="Filter by modality.",
+)
 @click.option(
     "--status",
     "statuses",
     type=click.Choice([status.value for status in BatchStatus]),
     multiple=True,
+    help="Repeatable status filter; selected statuses are ORed.",
 )
-@click.option("--name")
-@click.option("--limit", type=click.IntRange(min=1))
+@click.option("--name", help="Filter by exact local alias.")
+@click.option("--limit", type=click.IntRange(min=1), help="Return at most this many records.")
 @click.pass_obj
 def list_jobs(
     root: RootOptions,
@@ -1482,7 +1650,7 @@ def list_jobs(
     name: str | None,
     limit: int | None,
 ) -> None:
-    """List cached local registry records without provider scans."""
+    """List locally recorded jobs without provider scans."""
     selected_registry = registry_path(root.registry)
     try:
         records = list_registry_jobs(
@@ -1514,14 +1682,8 @@ def list_jobs(
             serialize_envelope(JobListEnvelope(jobs=[record.job for record in records])),
             nl=False,
         )
-    elif not records:
-        click.echo("No local jobs.")
     else:
-        for record in records:
-            job = record.job
-            selector = job.name or job.record_id
-            status = job.status.value if job.status is not None else "-"
-            click.echo(f"{selector}\t{job.provider.value}\t{status}\t{job.provider_job_id}")
+        click.echo(human_table(records), nl=False)
 
 
 @cli.command()
@@ -1577,7 +1739,7 @@ def forget(root: RootOptions, job: str) -> None:
 @click.option("--yes", is_flag=True, help="Commit the displayed local deletion plan.")
 @click.pass_obj
 def prune(root: RootOptions, older_than: str, yes: bool) -> None:
-    """Preview or commit deletion of old terminal local records."""
+    """Preview or remove old terminal records; remote jobs are unchanged."""
     seconds = duration_seconds(older_than)
     if seconds is None:
         raise click.UsageError("--older-than is required.")
@@ -1694,7 +1856,27 @@ def config_show(root: RootOptions) -> None:
     if mode in {OutputMode.JSON, OutputMode.JSONL}:
         click.echo(serialize_envelope(envelope), nl=False)
     else:
-        click.echo(f"Config: {loaded.path}\nProfile: {profile_name or 'none'}")
+        lines = [
+            "Effective configuration",
+            f"  Path      {loaded.path}",
+            f"  Profile   {profile_name or 'none'}",
+        ]
+        for modality, model in sorted(models.items()):
+            lines.append(f"  Model     {modality}: {model}")
+        for provider, settings in providers.items():
+            lines.append(f"  Provider  {provider}")
+            lines.append(f"    Credential variable  {settings.api_key_env}")
+            if settings.base_url is not None:
+                lines.append(f"    Base URL             {settings.base_url}")
+            if settings.headers:
+                lines.append(f"    Literal headers      {', '.join(sorted(settings.headers))}")
+            if settings.header_env:
+                variables = ", ".join(
+                    f"{name}={variable}" for name, variable in sorted(settings.header_env.items())
+                )
+                lines.append(f"    Header variables     {variables}")
+        lines.append("Credential values were not read.")
+        click.echo("\n".join(lines))
 
 
 @cli.group(no_args_is_help=True)

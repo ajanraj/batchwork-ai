@@ -75,6 +75,7 @@ from ._failures import (
     TerminationRequested,
     provider_failure,
 )
+from ._human import human_error, human_job
 from ._input import load_embedding_requests, load_image_requests, load_text_requests
 from ._registry import RegistryRoute, insert_job
 from ._state import OutputMode, RootOptions
@@ -239,7 +240,7 @@ def _key_value(values: Sequence[str], label: str) -> dict[str, str]:
         name, separator, item = value.partition("=")
         normalized = name.strip().lower()
         if not separator or not normalized or not item:
-            raise _usage(f'{label} must use non-empty NAME=VALUE syntax: "{value}".')
+            raise _usage(f"{label} must use non-empty NAME=VALUE syntax; value omitted.")
         if normalized in parsed:
             raise _usage(f'Duplicate {label} name: "{name}".')
         parsed[normalized] = item
@@ -927,25 +928,13 @@ def _direct_recovery_command(
     return command
 
 
-def render_job(job: Job, mode: OutputMode) -> str:
+def render_job(job: Job, mode: OutputMode, *, color: bool = False) -> str:
     if mode in {OutputMode.JSON, OutputMode.JSONL}:
         return serialize_envelope(JobEnvelope(job=job))
-    selector = job.record_id or job.provider_reference
-    modality = job.modality or "batch"
-    lines = [
-        f"Submitted {modality} batch",
-        f"Job: {selector}",
-        f"Provider: {job.provider.value}",
-        f"Reference: {job.provider_reference}",
-        f"Status: {job.status.value if job.status else 'unknown'}",
-        f"Resume: batchwork status {selector}",
-    ]
-    return "\n".join(lines) + "\n"
+    return human_job(job, color=color)
 
 
 def render_error(error: ErrorEnvelope, mode: OutputMode) -> str:
     if mode in {OutputMode.JSON, OutputMode.JSONL}:
         return serialize_envelope(error)
-    recovery = error.error.recovery
-    command = " ".join(recovery.command) if recovery and recovery.command else "unavailable"
-    return f"Error: {error.error.message}\nRecovery: {command}\n"
+    return human_error(error.error)

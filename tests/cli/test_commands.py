@@ -44,6 +44,36 @@ def test_version_uses_installed_distribution_metadata() -> None:
     assert result.stderr == ""
 
 
+def test_root_help_explains_output_defaults_and_route_complete_selectors() -> None:
+    result = CliRunner().invoke(cli, ["--help"], prog_name="batchwork")
+
+    assert result.exit_code == 0
+    assert "Interactive stdout uses human output" in result.output
+    assert "JSONL for streaming results and run" in result.output
+    assert "local alias" in result.output
+    assert "provider:provider-job-id" in result.output
+
+
+@pytest.mark.parametrize("command", ("status", "wait", "results", "cancel"))
+def test_lifecycle_help_explains_direct_routing_and_adoption(command: str) -> None:
+    result = CliRunner().invoke(cli, [command, "--help"], prog_name="batchwork")
+
+    assert result.exit_code == 0
+    assert "Qualify a bare provider job ID" in result.output
+    assert "Adopt a successful direct operation locally" in result.output
+    assert "--header-env NAME=ENV_VAR" in result.output
+
+
+def test_creation_help_explains_source_transport_and_safe_headers() -> None:
+    result = CliRunner().invoke(cli, ["submit", "text", "--help"], prog_name="batchwork")
+
+    assert result.exit_code == 0
+    assert 'SOURCE is one regular file or "-"' in result.output
+    assert "Stdin and unknown" in result.output
+    assert "Repeatable non-secret literal provider header" in result.output
+    assert "Authorize work above the soft volume gate" in result.output
+
+
 @pytest.mark.parametrize("shell", ("bash", "zsh", "fish"))
 def test_shell_completion_source_bypasses_operational_state(shell: str, tmp_path) -> None:
     result = CliRunner().invoke(
