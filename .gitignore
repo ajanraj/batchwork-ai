@@ -17,5 +17,6 @@ coverage.xml
 htmlcov/
 *.log
 .DS_Store
+.claude/
 .wrangler/
 cover/
