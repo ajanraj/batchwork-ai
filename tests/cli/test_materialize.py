@@ -121,6 +121,30 @@ async def test_materializer_rejects_unknown_bytes_declared_as_supported_image(
 
 
 @pytest.mark.asyncio
+async def test_materializer_rejects_arbitrary_bytes_declared_as_unknown_image(
+    tmp_path: Path,
+) -> None:
+    output = prepare_output_directory(tmp_path / "images", operation="results")
+    materializer = ImageMaterializer(output, operation="results")
+    result = BatchResult(
+        custom_id="not-an-image",
+        status=BatchResultStatus.SUCCEEDED,
+        images=[
+            BatchImage(
+                data=base64.b64encode(b"arbitrary bytes").decode(),
+                media_type="image/x-made-up",
+            )
+        ],
+    )
+
+    with pytest.raises(CliFailure) as failure:
+        await materializer.materialize_result("bw_" + "a" * 32, None, result)
+
+    assert failure.value.envelope.error.materialized_images == 0
+    assert not list(output.glob("*.bin"))
+
+
+@pytest.mark.asyncio
 async def test_materializer_preserves_unknown_image_media_with_bin_extension(
     tmp_path: Path,
 ) -> None:
@@ -192,3 +216,85 @@ async def test_materializer_never_overwrites_a_completed_image(
     assert enriched.error.records_emitted == 2
     assert enriched.error.materialized_images == 1
     assert enriched.error.materialized_bytes == len(_PNG)
+
+
+@pytest.mark.asyncio
+async def test_manifest_failure_rolls_back_uncommitted_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = prepare_output_directory(tmp_path / "images", operation="results")
+    materializer = ImageMaterializer(output, operation="results")
+    result = BatchResult(
+        custom_id="rollback",
+        status=BatchResultStatus.SUCCEEDED,
+        images=[
+            BatchImage(
+                data=base64.b64encode(_PNG).decode(),
+                media_type="image/png",
+            )
+        ],
+    )
+
+    def fail_manifest() -> None:
+        raise OSError("manifest unavailable")
+
+    monkeypatch.setattr(materializer, "_write_manifest", fail_manifest)
+
+    with pytest.raises(CliFailure) as failure:
+        await materializer.materialize_result("bw_" + "a" * 32, None, result)
+
+    assert failure.value.envelope.error.materialized_images == 0
+    assert failure.value.envelope.error.materialized_bytes == 0
+    assert not list(output.glob("*.png"))
+    assert materializer.entries == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="stable directory identities require POSIX")
+@pytest.mark.asyncio
+async def test_materializer_rejects_output_directory_replacement(tmp_path: Path) -> None:
+    output = prepare_output_directory(tmp_path / "images", operation="results")
+    materializer = ImageMaterializer(output, operation="results")
+    original = tmp_path / "original-images"
+    output.rename(original)
+    output.mkdir()
+    result = BatchResult(
+        custom_id="directory-swap",
+        status=BatchResultStatus.SUCCEEDED,
+        images=[
+            BatchImage(
+                data=base64.b64encode(_PNG).decode(),
+                media_type="image/png",
+            )
+        ],
+    )
+
+    with pytest.raises(CliFailure, match="output directory changed"):
+        await materializer.materialize_result("bw_" + "a" * 32, None, result)
+
+    assert not list(output.iterdir())
+    assert not list(original.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_materializer_never_replaces_a_foreign_manifest(tmp_path: Path) -> None:
+    output = prepare_output_directory(tmp_path / "images", operation="results")
+    materializer = ImageMaterializer(output, operation="results")
+    foreign_manifest = b"foreign manifest"
+    (output / "manifest.json").write_bytes(foreign_manifest)
+    result = BatchResult(
+        custom_id="foreign-manifest",
+        status=BatchResultStatus.SUCCEEDED,
+        images=[
+            BatchImage(
+                data=base64.b64encode(_PNG).decode(),
+                media_type="image/png",
+            )
+        ],
+    )
+
+    with pytest.raises(CliFailure):
+        await materializer.materialize_result("bw_" + "a" * 32, None, result)
+
+    assert (output / "manifest.json").read_bytes() == foreign_manifest
+    assert not list(output.glob("*.png"))

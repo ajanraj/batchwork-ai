@@ -7,7 +7,9 @@ import binascii
 import hashlib
 import os
 import re
+import stat
 import tempfile
+import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
 from batchwork._limits import MAX_AGGREGATE_MEDIA_BYTES, MAX_DECODED_MEDIA_BYTES
@@ -56,6 +58,7 @@ _EXTENSIONS = {
     "image/png": "png",
     "image/webp": "webp",
 }
+FileIdentity = tuple[int, int]
 
 
 def _failure(
@@ -130,6 +133,8 @@ class ImageMaterializer:
         self.byte_count = 0
         self._job: str | None = None
         self._routing_fingerprint: str | None = None
+        self._output_identity = self._path_identity(output_dir)
+        self._manifest_identity: FileIdentity | None = None
         self._resolver = DefaultMediaResolver(timeout=30.0)
 
     async def materialize_result(
@@ -180,10 +185,8 @@ class ImageMaterializer:
                     )
                 digest = hashlib.sha256(resolved.data).hexdigest()
                 filename = self._filename(result.custom_id, index, extension)
-                if (self.output_dir / filename).exists():
-                    raise ValueError(f'completed image "{filename}" already exists')
                 try:
-                    self._atomic_write(
+                    image_identity = self._atomic_write(
                         self.output_dir / filename,
                         resolved.data,
                         replace=False,
@@ -200,9 +203,14 @@ class ImageMaterializer:
                     sha256=digest,
                 )
                 self.entries.append(entry)
+                try:
+                    self._write_manifest()
+                except Exception:
+                    self.entries.pop()
+                    self._unlink_if_identity(self.output_dir / filename, image_identity)
+                    raise
                 new_entries.append(entry)
                 self.byte_count += len(resolved.data)
-                self._write_manifest()
         except CliFailure:
             raise
         except Exception as error:
@@ -238,13 +246,66 @@ class ImageMaterializer:
             detected = "image/gif"
         elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
             detected = "image/webp"
-        if detected is None and media_type in _EXTENSIONS:
+        if detected is not None:
+            return _EXTENSIONS[detected]
+        if media_type in _EXTENSIONS:
             raise ValueError(
                 f'provider returned bytes that do not match declared type "{media_type}"'
             )
-        return _EXTENSIONS.get(detected or media_type, "bin")
+        if self._valid_other_image(data, media_type):
+            return "bin"
+        raise ValueError(f'provider returned invalid image media type "{media_type}"')
 
-    def _atomic_write(self, path: Path, data: bytes, *, replace: bool = True) -> None:
+    def _valid_other_image(self, data: bytes, media_type: str) -> bool:
+        signatures = {
+            "image/bmp": (b"BM",),
+            "image/tiff": (b"II*\x00", b"MM\x00*"),
+            "image/x-icon": (b"\x00\x00\x01\x00",),
+            "image/vnd.microsoft.icon": (b"\x00\x00\x01\x00",),
+        }
+        if media_type in signatures:
+            return data.startswith(signatures[media_type])
+        if media_type == "image/svg+xml":
+            try:
+                root = ElementTree.fromstring(data)
+            except ElementTree.ParseError:
+                return False
+            return root.tag.rsplit("}", 1)[-1].casefold() == "svg"
+        if media_type in {"image/avif", "image/heic", "image/heif"}:
+            return (
+                len(data) >= 16
+                and data[4:8] == b"ftyp"
+                and any(brand in data[8:32] for brand in (b"avif", b"avis", b"heic", b"heif"))
+            )
+        return False
+
+    def _path_identity(self, path: Path) -> FileIdentity:
+        metadata = path.stat(follow_symlinks=False)
+        return metadata.st_dev, metadata.st_ino
+
+    def _validate_output_directory(self) -> None:
+        metadata = self.output_dir.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or (metadata.st_dev, metadata.st_ino) != self._output_identity
+        ):
+            raise OSError("output directory changed after validation")
+
+    def _unlink_if_identity(self, path: Path, identity: FileIdentity) -> None:
+        try:
+            if self._path_identity(path) == identity:
+                path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _atomic_write(
+        self,
+        path: Path,
+        data: bytes,
+        *,
+        replace: bool = True,
+    ) -> FileIdentity:
+        self._validate_output_directory()
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=self.output_dir)
         try:
             os.fchmod(descriptor, 0o600)
@@ -253,6 +314,9 @@ class ImageMaterializer:
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
+                metadata = os.fstat(stream.fileno())
+                identity = (metadata.st_dev, metadata.st_ino)
+            self._validate_output_directory()
             if replace:
                 os.replace(temporary, path)
             elif os.name == "nt":
@@ -260,6 +324,7 @@ class ImageMaterializer:
             else:
                 os.link(temporary, path)
                 os.unlink(temporary)
+            return identity
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
@@ -276,7 +341,12 @@ class ImageMaterializer:
             routing_fingerprint=self._routing_fingerprint,
             images=self.entries,
         )
-        self._atomic_write(
-            self.output_dir / "manifest.json",
+        path = self.output_dir / "manifest.json"
+        if self._manifest_identity is not None:
+            if self._path_identity(path) != self._manifest_identity:
+                raise OSError("manifest changed after Batchwork created it")
+        self._manifest_identity = self._atomic_write(
+            path,
             serialize_envelope(manifest).encode("utf-8"),
+            replace=self._manifest_identity is not None,
         )
