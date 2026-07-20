@@ -12,6 +12,15 @@ export default defineConfig({
         src: "https://umami.ajanraj.com/script.js",
         strategy: "defer",
       },
+      // Cloudflare Rocket Loader defers Blume's pre-paint theme script, which
+      // makes dark-mode pages paint light first. This copy is marked
+      // data-cfasync="false" so Rocket Loader leaves it alone and the theme is
+      // set before first paint even when Rocket Loader is enabled.
+      {
+        attributes: { "data-cfasync": "false" },
+        content:
+          '(()=>{const s=localStorage.getItem("blume-theme");const sys=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=s??sys;})();',
+      },
     ],
   },
   content: {
