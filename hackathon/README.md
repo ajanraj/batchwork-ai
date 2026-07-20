@@ -68,7 +68,7 @@ The entire package was built in the Codex CLI with **GPT-5.6-sol** (with GPT-5.6
 4. **Verify live.** Codex tested against real OpenAI and Gemini keys, ran the 300-comment classification evaluation end to end (90.3% accuracy, ~$0.007), and reproduced it from a clean temporary uv project installing only the published wheel.
 5. **Ship.** Codex drove repo creation, PyPI trusted-publishing setup, the docs site, and Cloudflare Pages deployment.
 
-Later GPT-5.6 sessions in the same workspace built the `batchwork` CLI, the agent skill, and the documentation site. Codex handled the breadth (seven providers × three modalities × serialization quirks) that would normally make a project like this a multi-week effort; the human role was direction, review feedback, and live-key approval.
+Later GPT-5.6 sessions in the same workspace built the rest of the product, end to end: the `batchwork` CLI (submit/run/status/wait/results/cancel, the schema-versioned machine output contract, the SQLite job registry, TOML profiles, the exit-code catalog), the `batchwork-ai` Agent Skill, the documentation site, and the CI release pipeline. Codex handled the breadth (seven providers × three modalities × serialization quirks, plus a full CLI surface) that would normally make a project like this a multi-week effort; the human role was direction, review feedback, and live-key approval.
 
 ## Where key decisions were made
 
