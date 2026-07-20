@@ -1,4 +1,5 @@
 import asyncio
+import os
 import socket
 import threading
 from pathlib import Path
@@ -396,6 +397,20 @@ async def test_local_media_requires_regular_bounded_type_checked_file(tmp_path: 
         await resolver.resolve("wrong.jpg", media_type="image/jpeg", max_bytes=100)
     with pytest.raises(MediaResolutionError, match="regular file"):
         await resolver.resolve("directory", media_type="text/plain", max_bytes=100)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="named pipes require POSIX")
+@pytest.mark.asyncio
+async def test_local_media_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "media.pipe"
+    os.mkfifo(fifo)
+    resolver = DefaultMediaResolver(base_path=tmp_path)
+
+    with pytest.raises(MediaResolutionError, match="regular file"):
+        await asyncio.wait_for(
+            resolver.resolve("media.pipe", media_type="text/plain", max_bytes=100),
+            timeout=1,
+        )
 
 
 @pytest.mark.asyncio

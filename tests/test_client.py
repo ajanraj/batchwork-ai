@@ -215,6 +215,41 @@ async def test_client_enforces_aggregate_decoded_media_limit(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_client_enforces_fixed_media_limits_when_batch_limits_are_higher(
+    monkeypatch,
+) -> None:
+    adapter = FakeAdapter()
+    monkeypatch.setattr(client_module, "_get_adapter", lambda provider, client: adapter)
+    monkeypatch.setattr(client_module, "MAX_DECODED_MEDIA_BYTES", 5)
+    monkeypatch.setattr(client_module, "MAX_AGGREGATE_MEDIA_BYTES", 10)
+    observed_limits: list[int] = []
+
+    class Resolver:
+        async def resolve(self, source, *, media_type=None, max_bytes):
+            observed_limits.append(max_bytes)
+            return ResolvedMedia(b"123456", "text/plain")
+
+    client = Batchwork(media_resolver=Resolver())
+    with pytest.raises(BatchworkError, match="aggregate decoded media"):
+        await client.batch(
+            model="together/model",
+            requests=[
+                BatchRequest(
+                    messages=[UserMessage(content=[FilePart(data="eA==", media_type="text/plain")])]
+                ),
+                BatchRequest(
+                    messages=[UserMessage(content=[FilePart(data="eQ==", media_type="text/plain")])]
+                ),
+            ],
+            limits=BatchLimits(max_request_bytes=100, max_upload_bytes=100),
+        )
+
+    assert observed_limits == [5, 5]
+    assert adapter.built == []
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_client_completes_local_media_preflight_before_remote_fetch(monkeypatch) -> None:
     adapter = FakeAdapter()
     monkeypatch.setattr(client_module, "_get_adapter", lambda provider, client: adapter)

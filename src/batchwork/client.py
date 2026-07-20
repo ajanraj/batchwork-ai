@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from ._limits import MAX_AGGREGATE_MEDIA_BYTES, MAX_DECODED_MEDIA_BYTES
 from .body import (
     build_embedding_bodies,
     build_image_bodies,
@@ -237,7 +238,7 @@ class Batchwork:
         adapter, resolved_credentials = self._adapter_and_credentials(
             spec.provider, credentials, api_key=api_key, base_url=base_url, headers=headers
         )
-        media_budget = _MediaBudget(limits.max_upload_bytes)
+        media_budget = _MediaBudget(min(limits.max_upload_bytes, MAX_AGGREGATE_MEDIA_BYTES))
         locally_prepared = await self._resolve_request_media(
             spec,
             requests,
@@ -406,7 +407,7 @@ class Batchwork:
             resolved = await self._media_resolver.resolve(
                 source,
                 media_type=media_type,
-                max_bytes=limits.max_request_bytes,
+                max_bytes=min(limits.max_request_bytes, MAX_DECODED_MEDIA_BYTES),
             )
             selected_budget.add(len(resolved.data))
             return resolved
