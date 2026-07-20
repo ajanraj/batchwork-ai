@@ -1,5 +1,7 @@
 import asyncio
 import socket
+import threading
+from pathlib import Path
 
 import httpcore
 import httpx
@@ -341,3 +343,97 @@ async def test_full_media_type_still_rejects_detected_subtype_mismatch() -> None
 async def test_rejects_insecure_remote_url() -> None:
     with pytest.raises(MediaResolutionError, match="must use HTTPS"):
         await DefaultMediaResolver().resolve("http://example.com/a.png", max_bytes=100)
+
+
+@pytest.mark.asyncio
+async def test_raw_media_strings_classify_base64_before_local_paths(tmp_path: Path) -> None:
+    (tmp_path / "dGVzdA==").write_bytes(b"file contents")
+    resolver = DefaultMediaResolver(base_path=tmp_path)
+
+    encoded = await resolver.resolve("dGVzdA==", media_type="text/plain", max_bytes=20)
+    explicit_path = await resolver.resolve("./dGVzdA==", media_type="text/plain", max_bytes=20)
+
+    assert encoded.data == b"test"
+    assert explicit_path.data == b"file contents"
+
+
+@pytest.mark.asyncio
+async def test_local_media_paths_resolve_from_configured_base_and_stay_literal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_dir = tmp_path / "source"
+    media_dir.mkdir()
+    relative = media_dir / "image.png"
+    relative.write_bytes(b"\x89PNG\r\n\x1a\npayload")
+    (media_dir / "linked.png").symlink_to(relative)
+    absolute = tmp_path / "absolute.pdf"
+    absolute.write_bytes(b"%PDF-payload")
+    monkeypatch.setenv("MEDIA_FILE", str(relative))
+    resolver = DefaultMediaResolver(base_path=media_dir)
+
+    resolved_relative = await resolver.resolve("image.png", max_bytes=100)
+    resolved_symlink = await resolver.resolve("linked.png", max_bytes=100)
+    resolved_absolute = await resolver.resolve(str(absolute), max_bytes=100)
+
+    assert resolved_relative == media_module.ResolvedMedia(relative.read_bytes(), "image/png")
+    assert resolved_symlink == resolved_relative
+    assert resolved_absolute == media_module.ResolvedMedia(absolute.read_bytes(), "application/pdf")
+    for literal in ("~/image.png", "$MEDIA_FILE", "*.png"):
+        with pytest.raises(MediaResolutionError, match="local media path"):
+            await resolver.resolve(literal, max_bytes=100)
+
+
+@pytest.mark.asyncio
+async def test_local_media_requires_regular_bounded_type_checked_file(tmp_path: Path) -> None:
+    resolver = DefaultMediaResolver(base_path=tmp_path)
+    (tmp_path / "large.txt").write_bytes(b"1234")
+    (tmp_path / "wrong.jpg").write_bytes(b"\x89PNG\r\n\x1a\npayload")
+    (tmp_path / "directory").mkdir()
+
+    with pytest.raises(MediaResolutionError, match="exceeding the 3 byte limit"):
+        await resolver.resolve("large.txt", media_type="text/plain", max_bytes=3)
+    with pytest.raises(MediaResolutionError, match="does not match"):
+        await resolver.resolve("wrong.jpg", media_type="image/jpeg", max_bytes=100)
+    with pytest.raises(MediaResolutionError, match="regular file"):
+        await resolver.resolve("directory", media_type="text/plain", max_bytes=100)
+
+
+@pytest.mark.asyncio
+async def test_relative_media_base_is_frozen_when_resolver_is_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "document.pdf").write_bytes(b"%PDF-frozen-base")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(tmp_path)
+    resolver = DefaultMediaResolver(base_path=Path("source"))
+
+    monkeypatch.chdir(elsewhere)
+    resolved = await resolver.resolve("document.pdf", max_bytes=100)
+
+    assert resolved.data == b"%PDF-frozen-base"
+
+
+@pytest.mark.asyncio
+async def test_local_media_read_runs_off_event_loop_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "document.pdf").write_bytes(b"%PDF-threaded")
+    resolver = DefaultMediaResolver(base_path=tmp_path)
+    event_loop_thread = threading.get_ident()
+    read_threads: list[int] = []
+    original_read = resolver._read_local
+
+    def tracked_read(
+        value: str, *, media_type: str | None, max_bytes: int
+    ) -> media_module.ResolvedMedia:
+        read_threads.append(threading.get_ident())
+        return original_read(value, media_type=media_type, max_bytes=max_bytes)
+
+    monkeypatch.setattr(resolver, "_read_local", tracked_read)
+    await resolver.resolve("document.pdf", max_bytes=100)
+
+    assert read_threads
+    assert read_threads[0] != event_loop_thread

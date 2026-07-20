@@ -68,7 +68,7 @@ State names include `BatchProvider`, `BatchStatus`, `BatchResultStatus`, and the
 
 ## Media
 
-`DefaultMediaResolver` implements the default HTTPS and inline-media policy. Applications may inject a `MediaResolver`; successful resolutions return `ResolvedMedia`. `ProviderFileReference` and tagged file-data types represent provider-owned or explicitly typed media sources. See [Security](/docs/guides/security#remote-media) for SSRF, redirect, and size boundaries.
+`DefaultMediaResolver` implements the default local-file, HTTPS, and inline-media policy. Raw strings are classified as HTTP(S), data URL, strict base64, then a path relative to its configured base directory. Applications may inject a `MediaResolver`; successful resolutions return `ResolvedMedia`. `ProviderFileReference` and tagged file-data types represent provider-owned or explicitly typed media sources. See [Security](/docs/guides/security#remote-media) for file, SSRF, redirect, and size boundaries.
 
 ## Server and stores
 
