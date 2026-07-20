@@ -16,15 +16,21 @@ import click
 from pydantic import TypeAdapter, ValidationError
 
 from batchwork._limits import MAX_PROVIDER_OPTIONS_BYTES
+from batchwork._text_validation import _text_endpoint_kind
 from batchwork.body import build_text_bodies, validate_request_count
 from batchwork.client import Batchwork
-from batchwork.errors import BatchworkError, _LimitExceededError
+from batchwork.errors import (
+    BatchworkError,
+    _LimitExceededError,
+    _OptionConflictError,
+    _ProviderOptionError,
+    _UnsupportedSettingError,
+)
 from batchwork.types import (
     BatchDefaults,
     BatchLimits,
     BatchProvider,
     JsonValue,
-    ModelKind,
     ModelSpec,
     ProviderOptions,
     resolve_model,
@@ -332,12 +338,14 @@ def _model_spec(model: str, endpoint: str | None) -> ModelSpec:
         raise CliUsageError(str(error), code=code) from error
     if endpoint is None:
         return resolved
-    kinds = {
-        "chat-completions": ModelKind.CHAT,
-        "responses": ModelKind.RESPONSES,
-        "completions": ModelKind.COMPLETION,
-    }
-    return resolved.model_copy(update={"kind": kinds[endpoint]})
+    try:
+        kind = _text_endpoint_kind(resolved.provider, endpoint)
+    except _UnsupportedSettingError as error:
+        raise CliUsageError(
+            str(error),
+            code="unsupported_setting",
+        ) from error
+    return resolved.model_copy(update={"kind": kind})
 
 
 def _defaults(
@@ -385,6 +393,16 @@ async def submit_text(
     if selected_model is None:
         raise _usage("--model is required for submit text.")
     spec = _model_spec(selected_model, options.endpoint)
+    if options.batch_metadata and spec.provider not in {
+        BatchProvider.OPENAI,
+        BatchProvider.GROQ,
+        BatchProvider.MISTRAL,
+        BatchProvider.TOGETHER,
+    }:
+        raise CliUsageError(
+            f"Provider {spec.provider.value} does not support submission-level batch metadata.",
+            code="unsupported_setting",
+        )
     if options.name is not None and (
         not _JOB_NAME.fullmatch(options.name) or _RECORD_ID.fullmatch(options.name)
     ):
@@ -421,8 +439,20 @@ async def submit_text(
     try:
         validate_request_count(requests, limits)
         built = build_text_bodies(
-            spec.provider, spec.model_id, requests, defaults, limits, kind=spec.kind
+            spec.provider,
+            spec.model_id,
+            requests,
+            defaults,
+            limits,
+            kind=spec.kind,
+            strict=True,
         )
+    except _ProviderOptionError as error:
+        raise CliUsageError(str(error), code="provider_option_invalid") from error
+    except _OptionConflictError as error:
+        raise CliUsageError(str(error), code="option_conflict") from error
+    except _UnsupportedSettingError as error:
+        raise CliUsageError(str(error), code="unsupported_setting") from error
     except (BatchworkError, ValueError) as error:
         raise _usage(str(error)) from error
     require_large_batch_authorization(

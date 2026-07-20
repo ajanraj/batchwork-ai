@@ -11,6 +11,18 @@ class _LimitExceededError(BatchworkError):
     """An internal, locally decidable hard safety bound was exceeded."""
 
 
+class _ProviderOptionError(BatchworkError):
+    """Selected-provider request options failed local validation."""
+
+
+class _OptionConflictError(BatchworkError):
+    """Canonical and provider-specific settings target the same behavior."""
+
+
+class _UnsupportedSettingError(BatchworkError):
+    """A locally known provider capability does not support a requested setting."""
+
+
 class BatchStateError(BatchworkError):
     """The requested operation is invalid for the batch's current state."""
 
