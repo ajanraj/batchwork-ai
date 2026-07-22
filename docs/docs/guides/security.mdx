@@ -1,11 +1,11 @@
 ---
 title: Security
-description: 'Understand Batchwork''s credential, media fetch, webhook signature, and replay-safety boundaries before production use.'
+description: "Understand Batchwork's credential, media fetch, webhook signature, and replay-safety boundaries before production use."
 ---
 
 ## Credentials
 
-Pass secrets through provider environment variables or `ProviderCredentials`; do not place them in requests, metadata, logs, or `custom_id`. Per-call values override client configuration, which overrides the environment. Injected base URLs and headers are trusted application configuration.
+Pass secrets through provider environment variables or `ProviderCredentials`; do not place them in requests, metadata, logs, or `custom_id`. Per-call values override client configuration, which overrides the environment. Injected base URLs and headers are trusted application configuration, but base URLs still require HTTPS and cannot contain userinfo, a query, or a fragment. HTTP is allowed only for the exact host `localhost` or a literal loopback IP such as `127.0.0.1` or `::1`, not a hostname that resolves to loopback. This validation intentionally hardens the trusted-configuration boundary.
 
 ## Remote media
 

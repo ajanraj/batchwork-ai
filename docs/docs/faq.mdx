@@ -1,6 +1,6 @@
 ---
 title: FAQ
-description: 'Answers on batch pricing, timing, failures, media handling, provider differences, resumability, and production operation with Batchwork.'
+description: "Answers on batch pricing, timing, failures, media handling, provider differences, resumability, and production operation with Batchwork."
 ---
 
 ## Does Batchwork make requests cheaper?
@@ -53,7 +53,7 @@ No. URLs that Batchwork fetches pass through `DefaultMediaResolver` protections.
 
 ## Can I use a gateway or custom base URL?
 
-Yes. Set the provider base-URL environment variable or pass `base_url`/`ProviderCredentials`. Custom endpoints and headers are trusted application configuration. Anthropic additionally requires its provider-returned results URL to match the configured API origin.
+Yes. Set the provider base-URL environment variable or pass `base_url`/`ProviderCredentials`. Custom endpoints and headers are trusted application configuration, but base URLs must use HTTPS and cannot contain userinfo, a query, or a fragment. HTTP is allowed only for the exact host `localhost` or a literal loopback IP such as `127.0.0.1` or `::1`; hostnames that resolve to loopback do not qualify. This is intentional hardening. Anthropic additionally requires its provider-returned results URL to match the configured API origin.
 
 ## Should a web request call `job.wait()`?
 

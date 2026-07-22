@@ -2,6 +2,12 @@
 
 All notable changes to `batchwork-ai` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Security
+
+- Intentionally hardened trusted custom provider base URLs: HTTPS is required except when an HTTP host is exactly `localhost` or a literal loopback IP; userinfo, query, and fragment components are rejected, and validation errors no longer echo rejected credential-bearing routing values.
+
 ## [0.2.2] - 2026-07-20
 
 ### Changed

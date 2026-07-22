@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: 'Configure models, credentials, providers, endpoints, and batch limits for the Batchwork client, CLI, and polling server.'
+description: "Configure models, credentials, providers, endpoints, and batch limits for the Batchwork client, CLI, and polling server."
 ---
 
 ## Models
@@ -115,7 +115,7 @@ async with Batchwork(credentials=credentials) as client:
     )
 ```
 
-Values may also be supplied to one call with `credentials=ProviderCredentials(...)`, `api_key=`, `base_url=`, and `headers=`. Custom endpoints and headers are trusted application configuration; review the [security boundaries](/docs/guides/security) before routing requests through a gateway.
+Values may also be supplied to one call with `credentials=ProviderCredentials(...)`, `api_key=`, `base_url=`, and `headers=`. Custom endpoints and headers are trusted application configuration. Base URLs must use HTTPS and cannot contain userinfo, a query, or a fragment. HTTP is allowed only when the host is exactly `localhost` or a literal loopback IP such as `127.0.0.1` or `::1`; a hostname that resolves to loopback does not qualify. This restriction is intentional hardening of the trusted-configuration boundary. Review the [security boundaries](/docs/guides/security) before routing requests through a gateway.
 
 ## Limits
 
