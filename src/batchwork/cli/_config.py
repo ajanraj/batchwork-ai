@@ -9,13 +9,13 @@ import sys
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from ipaddress import ip_address
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit, urlunsplit
 
 import click
 
+from batchwork._base_url import BaseUrlError
+from batchwork._base_url import normalize_base_url as normalize_core_base_url
 from batchwork.errors import BatchworkError
 from batchwork.types import BatchProvider, resolve_model
 
@@ -136,33 +136,10 @@ def registry_path(explicit: Path | None, environment: Mapping[str, str] = os.env
 def normalize_base_url(value: str | None, label: str = "base URL") -> str | None:
     if value is None:
         return None
-    parsed = urlsplit(value)
-    hostname = parsed.hostname
     try:
-        _ = parsed.port
-    except ValueError as error:
-        raise ConfigError(f"{label} contains an invalid port.", code="endpoint_invalid") from error
-    loopback = hostname == "localhost"
-    if hostname is not None:
-        try:
-            loopback = loopback or ip_address(hostname).is_loopback
-        except ValueError:
-            pass
-    if (
-        not hostname
-        or any(character.isspace() for character in parsed.netloc)
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or (parsed.scheme != "https" and not (parsed.scheme == "http" and loopback))
-    ):
-        raise ConfigError(
-            f"{label} must be absolute HTTPS (HTTP allowed for loopback), without "
-            "userinfo, query, or fragment.",
-            code="endpoint_invalid",
-        )
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+        return normalize_core_base_url(value, label)
+    except BaseUrlError as error:
+        raise ConfigError(str(error), code="endpoint_invalid") from error
 
 
 def validate_environment_name(value: str, label: str) -> str:

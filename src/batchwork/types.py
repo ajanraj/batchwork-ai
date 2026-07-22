@@ -7,18 +7,55 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, JsonValue, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    JsonValue,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 
+from ._base_url import BaseUrlError, normalize_base_url
 from ._limits import MAX_REQUEST_BYTES, MAX_REQUESTS, MAX_UPLOAD_BYTES
 from .errors import UnsupportedProviderError
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 ProviderOptions: TypeAlias = dict[str, dict[str, JsonValue]]
+_REDACTED_VALIDATION_INPUT = "<redacted>"
 
 
 def _to_camel(value: str) -> str:
     head, *tail = value.split("_")
     return head + "".join(part.capitalize() for part in tail)
+
+
+def _redacted_validation_error(message: str) -> ValidationError:
+    return ValidationError.from_exception_data(
+        "sensitive input",
+        [
+            {
+                "type": PydanticCustomError(
+                    "value_error", "Value error, {message}", {"message": message}
+                ),
+                "loc": (),
+                "input": _REDACTED_VALIDATION_INPUT,
+            }
+        ],
+        hide_input=True,
+    )
+
+
+def _validated_base_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        return normalize_base_url(value)
+    except BaseUrlError as error:
+        raise _redacted_validation_error(str(error)) from None
 
 
 class BatchworkModel(BaseModel):
@@ -56,9 +93,16 @@ class ModelSpec(BatchworkModel):
 
 
 class ProviderCredentials(BatchworkModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict, repr=False)
+
+    @field_validator("base_url")
+    @classmethod
+    def _safe_base_url(cls, value: str | None) -> str | None:
+        return _validated_base_url(value)
 
 
 class BatchLimits(BatchworkModel):
@@ -560,6 +604,8 @@ class BatchSnapshot(BatchworkModel):
 
 
 class BatchRef(BatchworkModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     id: str = Field(min_length=1)
     provider: BatchProvider | None = None
     model: str | ModelSpec | None = None
@@ -567,10 +613,17 @@ class BatchRef(BatchworkModel):
     base_url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict, repr=False)
 
+    @field_validator("base_url")
+    @classmethod
+    def _safe_base_url(cls, value: str | None) -> str | None:
+        return _validated_base_url(value)
+
     @model_validator(mode="after")
     def _has_provider(self) -> BatchRef:
         if self.provider is None and self.model is None:
-            raise ValueError("provide provider or model to identify the batch")
+            raise _redacted_validation_error(
+                "provide provider or model to identify the batch"
+            ) from None
         return self
 
 

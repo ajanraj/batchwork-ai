@@ -141,6 +141,20 @@ def test_config_validate_rejects_invalid_configuration(
     assert message in json.loads(result.stderr)["error"]["message"]
 
 
+@pytest.mark.parametrize("delimiter", ("?", "#"))
+def test_config_validate_rejects_empty_query_or_fragment(tmp_path: Path, delimiter: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "schema_version = 1\n[profiles.work.providers.openai]\n"
+        f"base_url = 'https://example.com/v1{delimiter}'\n"
+    )
+
+    result = CliRunner().invoke(cli, ["--config", str(path), "config", "validate"])
+
+    assert result.exit_code == 3
+    assert json.loads(result.stderr)["error"]["code"] == "endpoint_invalid"
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permissions only")
 def test_config_validate_rejects_group_writable_file(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"

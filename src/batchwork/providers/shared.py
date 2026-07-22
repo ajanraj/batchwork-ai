@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 import httpx
 
+from batchwork._base_url import normalize_base_url
 from batchwork._bounded_json import JsonSizeExceeded, encode_bounded_json
 from batchwork._limits import (
     MAX_AGGREGATE_RESULTS_BYTES,
@@ -43,7 +44,7 @@ def api_key(credentials: ProviderCredentials, env_vars: Sequence[str], label: st
 
 
 def base_url(credentials: ProviderCredentials, default: str) -> str:
-    return (credentials.base_url or default).rstrip("/")
+    return normalize_base_url(credentials.base_url or default)
 
 
 def merge_headers(defaults: Mapping[str, str], credentials: ProviderCredentials) -> dict[str, str]:

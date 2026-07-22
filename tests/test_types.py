@@ -20,6 +20,7 @@ from batchwork.types import (
     BatchStatus,
     ImagePart,
     ModelKind,
+    ProviderCredentials,
     TextPart,
     ToolMessage,
     UserMessage,
@@ -149,3 +150,51 @@ def test_ref_provider_precedes_model() -> None:
     assert resolve_model("gemini/gemini-2.5-pro").provider is BatchProvider.GOOGLE
     assert resolve_model("togetherai/meta-llama/test").provider is BatchProvider.TOGETHER
     assert resolve_model("xai/grok-4").kind is ModelKind.RESPONSES
+
+
+@pytest.mark.parametrize("model", (ProviderCredentials, BatchRef))
+def test_routing_models_normalize_and_validate_base_url(model: type) -> None:
+    arguments = {"id": "batch_1", "provider": "openai"} if model is BatchRef else {}
+
+    value = model(**arguments, base_url="https://gateway.example.com/v1/")
+    assert value.base_url == "https://gateway.example.com/v1"
+
+    rejected = "https://user:super-secret@example.com/v1"
+    with pytest.raises(ValidationError, match="absolute HTTPS") as caught:
+        model(**arguments, base_url=rejected)
+
+    for rendered in (
+        str(caught.value),
+        repr(caught.value),
+        repr(caught.value.errors()),
+        caught.value.json(),
+    ):
+        assert "super-secret" not in rendered
+        assert rejected not in rendered
+        assert "base_url" in rendered
+        assert "absolute HTTPS" in rendered
+    assert caught.value.errors()[0]["input"] == "<redacted>"
+
+
+def test_batch_ref_model_validation_hides_sensitive_inputs() -> None:
+    with pytest.raises(ValidationError, match="provide provider or model") as caught:
+        BatchRef(id="batch_1", api_key="super-secret")
+
+    for rendered in (
+        str(caught.value),
+        repr(caught.value),
+        repr(caught.value.errors()),
+        caught.value.json(),
+    ):
+        assert "super-secret" not in rendered
+    assert caught.value.errors()[0]["input"] == "<redacted>"
+
+
+def test_provider_credentials_repr_excludes_secrets() -> None:
+    credentials = ProviderCredentials(
+        api_key="super-secret",
+        base_url="https://gateway.example.com/v1",
+        headers={"authorization": "super-secret"},
+    )
+
+    assert "super-secret" not in repr(credentials)

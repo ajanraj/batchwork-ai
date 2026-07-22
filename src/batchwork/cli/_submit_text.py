@@ -331,11 +331,12 @@ def _resolve_route(
 
 
 def resolve_registered_route(provider: BatchProvider, route: RegistryRoute) -> ResolvedRoute:
+    base_url = normalize_base_url(route.base_url, "registered base URL")
     api_key = _environment_value(route.api_key_env, "API key")
     resolved_headers = dict(route.headers)
     for name, variable in route.header_env.items():
         resolved_headers[name] = _environment_value(variable, f'Header "{name}"')
-    return ResolvedRoute(api_key, route.base_url, resolved_headers, route)
+    return ResolvedRoute(api_key, base_url, resolved_headers, route)
 
 
 def _parse_json_object(document: str, label: str) -> dict[str, JsonValue]:

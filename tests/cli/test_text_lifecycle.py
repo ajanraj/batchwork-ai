@@ -1003,6 +1003,76 @@ def test_direct_lifecycle_bypasses_corrupt_registry(
     assert handler.requests == [("GET", "/v1/batches/batch_123")]
 
 
+def test_direct_lifecycle_rejects_invalid_endpoint_before_network(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+
+    result = subprocess.run(
+        [_batchwork(), "--json", "status", *_direct(f"{base_url}?")],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    assert json.loads(result.stderr)["error"]["code"] == "endpoint_invalid"
+    assert handler.requests == []
+
+
+def test_registered_lifecycle_revalidates_endpoint_before_network(
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    registry = tmp_path / "registry.sqlite3"
+    saved = subprocess.run(
+        [
+            _batchwork(),
+            "--json",
+            "--registry",
+            str(registry),
+            "status",
+            *_direct(base_url),
+            "--save",
+            "--name",
+            "saved-job",
+        ],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert saved.returncode == 0, saved.stderr
+    with sqlite3.connect(registry) as connection:
+        connection.execute("UPDATE jobs SET base_url = ?", (f"{base_url}?",))
+    handler.requests = []
+
+    result = subprocess.run(
+        [
+            _batchwork(),
+            "--json",
+            "--registry",
+            str(registry),
+            "status",
+            "saved-job",
+        ],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    assert json.loads(result.stderr)["error"]["code"] == "endpoint_invalid"
+    assert handler.requests == []
+
+
 def test_local_lifecycle_fails_closed_on_corrupt_registry(
     tmp_path: Path,
     lifecycle_provider: tuple[str, type[_LifecycleHandler]],

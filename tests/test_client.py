@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 import batchwork.client as client_module
 from batchwork import Batchwork
@@ -157,6 +158,112 @@ async def test_empty_requests_fail_before_adapter_lookup() -> None:
     with pytest.raises(BatchworkError, match="must not be empty"):
         await client.batch(model="openai/gpt-5", requests=[])
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_environment_base_url_is_rejected_before_network_dispatch(monkeypatch) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200)
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://169.254.169.254/latest")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = Batchwork(http_client=http_client)
+        with pytest.raises(ValidationError, match="absolute HTTPS"):
+            await client.batch(model="openai/gpt-5", requests=[BatchRequest(prompt="hello")])
+        await client.aclose()
+
+    assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        {
+            "api_key": "super-secret",
+            "base_url": "https://user:super-secret@example.com/v1",
+        },
+        {
+            "credentials": {
+                "api_key": "super-secret",
+                "base_url": "https://user:super-secret@example.com/v1",
+            }
+        },
+    ),
+)
+async def test_per_call_base_url_is_rejected_before_credential_dispatch(
+    arguments: dict[str, object],
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = Batchwork(http_client=http_client)
+        with pytest.raises(ValidationError, match="absolute HTTPS") as caught:
+            await client.batch(
+                model="openai/gpt-5",
+                requests=[BatchRequest(prompt="hello")],
+                **arguments,
+            )
+        await client.aclose()
+
+    for rendered in (
+        str(caught.value),
+        repr(caught.value),
+        repr(caught.value.errors()),
+        caught.value.json(),
+    ):
+        assert "super-secret" not in rendered
+        assert "https://user:super-secret@example.com/v1" not in rendered
+    assert caught.value.errors()[0]["input"] == "<redacted>"
+    assert requests == []
+
+
+def test_constructor_credentials_reject_unsafe_base_url() -> None:
+    with pytest.raises(ValidationError, match="absolute HTTPS"):
+        Batchwork(
+            credentials={
+                "openai": {
+                    "api_key": "super-secret",
+                    "base_url": "http://not-loopback.example/v1",
+                }
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_batch_ref_lifecycle_rejects_unsafe_base_url_before_dispatch() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200)
+
+    ref = BatchRef.model_construct(
+        id="batch_1",
+        provider=BatchProvider.OPENAI,
+        model=None,
+        api_key="super-secret",
+        base_url="http://not-loopback.example/v1",
+        headers={},
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = Batchwork(http_client=http_client)
+        with pytest.raises(ValidationError, match="absolute HTTPS"):
+            await client.get_batch(ref)
+        with pytest.raises(ValidationError, match="absolute HTTPS"):
+            _ = [item async for item in client.get_batch_results(ref)]
+        with pytest.raises(ValidationError, match="absolute HTTPS"):
+            await client.cancel_batch(ref)
+        await client.aclose()
+
+    assert requests == []
 
 
 @pytest.mark.asyncio

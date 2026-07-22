@@ -9,6 +9,7 @@ import pytest
 
 import batchwork.providers.openai_compatible as compatible_module
 import batchwork.providers.shared as shared_module
+from batchwork._base_url import BaseUrlError
 from batchwork._network import AddressResolutionFailure, AddressResolutionFailureReason
 from batchwork._provider_failure import ProviderFailureError, ProviderFailureKind
 from batchwork.body import BuiltRequest
@@ -24,6 +25,27 @@ from batchwork.providers.shared import (
 from batchwork.types import BatchLimits, BatchProvider, ProviderCredentials
 
 _GOOGLE_INLINE_BATCH_MAX_BYTES = 20 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_adapter_revalidates_base_url_before_network_dispatch() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200)
+
+    credentials = ProviderCredentials.model_construct(
+        api_key="secret",
+        base_url="http://169.254.169.254/latest",
+        headers={},
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = get_adapter(BatchProvider.OPENAI, http_client=client)
+        with pytest.raises(BaseUrlError, match="absolute HTTPS"):
+            await adapter.retrieve("batch_1", credentials)
+
+    assert requests == []
 
 
 @pytest.mark.asyncio
