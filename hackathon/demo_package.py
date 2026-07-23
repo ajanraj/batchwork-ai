@@ -31,8 +31,7 @@ async def report(snapshot: BatchSnapshot) -> None:
 
 async def main() -> None:
     requests = [
-        BatchRequest(custom_id=custom_id, prompt=prompt)
-        for custom_id, prompt in PROMPTS.items()
+        BatchRequest(custom_id=custom_id, prompt=prompt) for custom_id, prompt in PROMPTS.items()
     ]
     defaults = BatchDefaults(
         max_output_tokens=64,
