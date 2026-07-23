@@ -1,6 +1,6 @@
 ---
 title: Anthropic
-description: 'Anthropic Message Batches in Batchwork with inline submission and same-origin streamed results through the typed client.'
+description: "Anthropic Message Batches in Batchwork with inline submission and same-origin streamed results through the typed client."
 ---
 
 Anthropic accepts Message Batches inline rather than through a JSONL upload. Batchwork translates messages and tools into Anthropic-native blocks, polls the batch object, and streams the provider’s JSONL results URL.
@@ -14,7 +14,7 @@ Anthropic accepts Message Batches inline rather than through a JSONL upload. Bat
 | Endpoint | `/v1/messages/batches` |
 | Submission | Inline `{requests: [{custom_id, params}]}` |
 | Results | JSONL from a provider-returned same-origin URL |
-| Batch metadata | Ignored |
+| Batch metadata | Rejected locally |
 | Webhooks | Managed polling only |
 | Credential | `ANTHROPIC_API_KEY` |
 | Default base URL | `https://api.anthropic.com` |
@@ -42,7 +42,7 @@ async with Batchwork() as client:
 4. `results()` streams JSONL from the returned `results_url`.
 5. `cancel()` calls `/v1/messages/batches/{id}/cancel`.
 
-Batch-level `metadata=` is not forwarded. Anthropic request-level user metadata remains available through provider options.
+Batch-level `metadata=` is rejected before provider work. Anthropic request-level user metadata remains available through provider options.
 
 ## Messages and tools
 
@@ -66,7 +66,7 @@ The CLI uses Anthropic's native Messages endpoint; `--endpoint` is not accepted.
 
 Unknown keys fail local preflight. `cacheControl`, `container`, `contextManagement`, `metadata`, `taskBudget`, and `thinking` are objects; `fallbacks` and `mcpServers` are arrays; `disableParallelToolUse` and `toolStreaming` are booleans. When `thinking.type` is `enabled` or `adaptive`, canonical `temperature`, `top_k`, and `top_p` conflict and fail rather than being silently removed. Canonical frequency/presence penalties and seed are unsupported.
 
-CLI batch metadata is unsupported and fails locally. Anthropic text batches retain the package-wide 50,000-request, 20 MiB/request, and 200 MiB aggregate bounds unless a lower provider/model limit is known.
+Submission-level batch metadata is unsupported and rejected before provider work. Anthropic text batches retain the package-wide 50,000-request, 20 MiB/request, and 200 MiB aggregate bounds unless a lower provider/model limit is known.
 
 ## Media and security
 

@@ -1,6 +1,6 @@
 ---
 title: Google Gemini
-description: 'Google Gemini inline batch operations in Batchwork for text, embeddings, and generated images with normalized results.'
+description: "Google Gemini inline batch operations in Batchwork for text, embeddings, and generated images with normalized results."
 ---
 
 Google Gemini uses inline long-running operations. Text and image requests use `:batchGenerateContent`; embeddings use `:asyncBatchEmbedContent`. Batchwork polls the operation and reads inline results.
@@ -13,7 +13,7 @@ Google Gemini uses inline long-running operations. Text and image requests use `
 | Text inputs | Messages, tools, inline media, Gemini Files URLs, supported YouTube URLs |
 | Submission | Inline long-running operation |
 | Results | Inline operation response only |
-| Batch metadata | Ignored |
+| Batch metadata | Rejected locally |
 | Webhooks | Managed polling only |
 | Credentials | `GOOGLE_GENERATIVE_AI_API_KEY`, then `GEMINI_API_KEY` |
 | Default base URL | `https://generativelanguage.googleapis.com/v1beta` |
@@ -100,7 +100,7 @@ Exact embedding keys are `content`, `outputDimensionality`, `taskType`, and `tit
 
 Exact image keys are `googleSearch`, `imageConfig`, `mediaResolution`, `responseModalities`, and `thinkingConfig`. `imageConfig.aspectRatio` collides with canonical `aspect_ratio`. `imageConfig.imageSize` accepts `1K`, `2K`, or `4K`; `responseModalities` must contain `IMAGE` and optional `TEXT`. Canonical image `size` is unsupported and `n` is limited to exactly 1.
 
-Unknown keys and basic shape/value errors fail locally. CLI batch metadata is unsupported. The inline serialized upload limit is 20 MiB, lower than the package's 200 MiB aggregate ceiling when applicable.
+Unknown keys and basic shape/value errors fail locally. Submission-level batch metadata is unsupported and rejected before provider work. The inline serialized upload limit is 20 MiB, lower than the package's 200 MiB aggregate ceiling when applicable.
 
 ## Media and result limits
 

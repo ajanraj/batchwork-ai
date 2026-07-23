@@ -1,6 +1,6 @@
 ---
 title: Mistral
-description: 'Mistral file-backed text and embedding batch jobs in Batchwork with normalized results and the shared async client.'
+description: "Mistral file-backed text and embedding batch jobs in Batchwork with normalized results and the shared async client."
 ---
 
 Mistral uses file-backed Batch Jobs for chat and embeddings. Its JSONL and create payload differ from OpenAI: each line contains only `custom_id` and `body`, while the endpoint and model are supplied when the job is created.
@@ -42,7 +42,7 @@ job = await client.batch_embeddings(
 )
 ```
 
-Mistral does not support canonical `dimensions`. Python keeps its prior non-strict behavior for unknown Mistral embedding provider options; CLI submission rejects them before upload.
+Mistral does not support canonical `dimensions`. Public Python and CLI submissions reject unknown Mistral embedding provider options before upload.
 
 ## Lifecycle
 

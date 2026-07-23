@@ -1,6 +1,6 @@
 ---
 title: Public API
-description: 'Public API reference for the Batchwork client, jobs, models, server primitives, stores, helpers, and typed error types.'
+description: "Public API reference for the Batchwork client, jobs, models, server primitives, stores, helpers, and typed error types."
 ---
 
 Import the supported surface from `batchwork`. Server and store names are also available from `batchwork.server` and `batchwork.stores`.
@@ -35,7 +35,9 @@ The async client accepts optional `credentials`, `http_client`, `media_resolver`
 | `await collect()` | `list[BatchResult]` |
 | `await cancel()` | Snapshot retrieved after requesting cancellation |
 
-`wait()` itself returns an awaitable. Negative `poll_interval` or `timeout` values raise `ValueError`; timeout expiration raises `BatchTimeoutError`. See [Jobs](/docs/guides/jobs) and [Results](/docs/guides/results) for lifecycle details.
+`wait()` itself returns an awaitable. `poll_interval` must be a positive finite number; `timeout` must be finite and non-negative when provided. Invalid values raise `ValueError`, while timeout expiration raises `BatchTimeoutError`. See [Jobs](/docs/guides/jobs) and [Results](/docs/guides/results) for lifecycle details.
+
+`wait()` retries transient provider status reads within its local deadline. Direct `poll()` calls remain single-attempt operations.
 
 ## Models and providers
 
@@ -56,6 +58,8 @@ Messages use `SystemMessage`, `UserMessage`, `AssistantMessage`, and `ToolMessag
 Tools use `FunctionTool` or `ProviderDefinedTool`, with `ToolChoice`, `NamedToolChoice`, and `ProviderToolChoice` controlling selection. Tool outputs include text, JSON, errors, execution denial, content, files, and custom output parts.
 
 All public models are frozen, reject unknown fields, and accept snake_case or camelCase input.
+
+`Batchwork` submissions validate canonical settings and provider options against the selected provider before upload. The lower-level builders in `batchwork.body` retain their explicit `strict` control for compatibility; the public client does not expose a permissive validation mode.
 
 ## Results and state
 
@@ -95,4 +99,4 @@ Stores include `BatchStore`, `MemoryBatchStore`, `RedisBatchStore`, `create_memo
 - `MediaResolutionError`: remote or inline media could not be resolved safely.
 - `BatchStateError`: exported for invalid batch-state operations.
 
-Negative `wait()` timing arguments raise the standard `ValueError`, not a `BatchworkError` subclass.
+Invalid `wait()` timing arguments raise the standard `ValueError`, not a `BatchworkError` subclass.

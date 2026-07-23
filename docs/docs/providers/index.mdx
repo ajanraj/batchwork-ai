@@ -1,6 +1,6 @@
 ---
 title: Providers
-description: 'Compare provider modalities, input media, batch transport, metadata fields, and webhook behavior across all seven adapters.'
+description: "Compare provider modalities, input media, batch transport, metadata fields, and webhook behavior across all seven adapters."
 ---
 
 Batchwork exposes one lifecycle across seven provider-native batch APIs. The provider still controls models, pricing, limits, processing time, and supported request features.
@@ -65,9 +65,9 @@ Provider/model support applies. See [Text and messages](/docs/modalities/text) a
 
 ## Batch-level metadata
 
-The `metadata=` submission argument is not supported uniformly.
+The `metadata=` submission argument is not supported uniformly. Unsupported providers reject it locally before upload or batch creation.
 
-| Forwarded                          | Ignored                |
+| Forwarded                          | Rejected               |
 | ---------------------------------- | ---------------------- |
 | OpenAI, Groq, Mistral, Together AI | Anthropic, Google, xAI |
 

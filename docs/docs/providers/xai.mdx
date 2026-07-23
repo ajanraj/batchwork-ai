@@ -1,6 +1,6 @@
 ---
 title: xAI
-description: 'xAI text and image batches in Batchwork with file upload, paginated result retrieval, and the unified typed client.'
+description: "xAI text and image batches in Batchwork with file upload, paginated result retrieval, and the unified typed client."
 ---
 
 xAI combines a file-backed submission with a paginated results API. String models use the Responses request shape; image models use `/v1/images/generations`.
@@ -14,7 +14,7 @@ xAI combines a file-backed submission with a paginated results API. String model
 | Endpoints         | `/v1/responses`, `/v1/images/generations`             |
 | Submission        | JSONL file upload, then `/batches`                    |
 | Results           | Paginated `/batches/{id}/results` endpoint            |
-| Batch metadata    | Ignored                                               |
+| Batch metadata    | Rejected locally                                      |
 | Webhooks          | Managed polling only                                  |
 | Credential        | `XAI_API_KEY`                                         |
 | Default base URL  | `https://api.x.ai/v1`                                 |
@@ -57,7 +57,7 @@ Generic `n` and `aspect_ratio` are supported. Generic `size` and `seed` are not 
 
 1. JSONL lines contain `custom_id`, `method: "POST"`, endpoint, and body.
 2. Batchwork uploads the file through `/files` without a purpose.
-3. `/batches` receives the file ID and fixed name `batchwork`; batch metadata is not forwarded.
+3. `/batches` receives the file ID and fixed name `batchwork`.
 4. `poll()` retrieves `/batches/{id}`.
 5. `results()` requests up to 100 records per page and follows `pagination_token`.
 6. `cancel()` calls `/batches/{id}:cancel`.
@@ -74,7 +74,7 @@ Text inputs can include images plus supported file URLs and provider file IDs. I
 
 Only `responses` is a valid explicit text `--endpoint`. Exact text request-root option keys are `include`, `logprobs`, `previousResponseId`, `reasoningEffort`, `reasoningSummary`, `store`, and `topLogprobs`. `include` is an array, `store` is boolean, `logprobs` is boolean or a non-negative integer, and `topLogprobs` is an integer from 0 through 8. Canonical frequency/presence penalties, stop sequences, and `top_k` are unsupported.
 
-Exact image option keys are `aspect_ratio`, `output_format`, `quality`, `resolution`, `sync_mode`, and `user`. Provider `aspect_ratio` collides with canonical `aspect_ratio`. Generic image `seed` and `size` are unsupported. Unknown keys and invalid values fail local preflight. CLI batch metadata is unsupported. Package hard bounds are 50,000 requests, 20 MiB per request, and 200 MiB aggregate, subject to lower xAI/model limits.
+Exact image option keys are `aspect_ratio`, `output_format`, `quality`, `resolution`, `sync_mode`, and `user`. Provider `aspect_ratio` collides with canonical `aspect_ratio`. Generic image `seed` and `size` are unsupported. Unknown keys and invalid values fail local preflight. Submission-level batch metadata is unsupported and rejected before file upload. Package hard bounds are 50,000 requests, 20 MiB per request, and 200 MiB aggregate, subject to lower xAI/model limits.
 
 ## Results
 

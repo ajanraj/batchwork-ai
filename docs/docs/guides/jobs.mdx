@@ -1,6 +1,6 @@
 ---
 title: Jobs
-description: 'Submit, poll, wait, cancel, and resume provider-native batch jobs through Batchwork''s typed async job lifecycle.'
+description: "Submit, poll, wait, cancel, and resume provider-native batch jobs through Batchwork's typed async job lifecycle."
 ---
 
 A submission returns a `BatchJob` as soon as the provider accepts the batch. Provider processing continues asynchronously and may take minutes or, depending on the provider and workload, up to 24 hours.
@@ -57,7 +57,9 @@ snapshot = await job.wait(
 )
 ```
 
-`wait()` is awaitable. `poll_interval` defaults to 15 seconds. A negative interval or timeout raises `ValueError`; an elapsed timeout raises `BatchTimeoutError` without canceling the provider batch.
+`wait()` is awaitable. `poll_interval` defaults to 15 seconds and must be a positive finite number. `timeout`, when provided, must be finite and non-negative. Invalid values raise `ValueError`; an elapsed timeout raises `BatchTimeoutError` without canceling the provider batch.
+
+Transient status-read failures are retried up to three attempts with bounded jittered backoff. Provider `Retry-After` guidance is honored up to 60 seconds without extending the local timeout. `poll()` remains a single provider request.
 
 Use `on_poll` to observe each refreshed snapshot:
 

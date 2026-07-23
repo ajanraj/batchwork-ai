@@ -4,6 +4,15 @@ All notable changes to `batchwork-ai` are documented here. The format follows [K
 
 ## [Unreleased]
 
+### Changed
+
+- Python `Batchwork` submissions now reject unsupported canonical settings, provider options, collisions, and submission-level batch metadata instead of silently discarding them. Low-level body builders retain their explicit `strict` control.
+- `BatchJob.wait()` now requires a positive finite polling interval and a finite non-negative timeout, and retries transient provider reads up to three total attempts while honoring bounded `Retry-After` delays.
+
+### Fixed
+
+- Malformed media `Content-Length` headers now fall back to the streamed-byte limit instead of leaking `ValueError`.
+
 ### Security
 
 - Intentionally hardened trusted custom provider base URLs: HTTPS is required except when an HTTP host is exactly `localhost` or a literal loopback IP; userinfo, query, and fragment components are rejected, and validation errors no longer echo rejected credential-bearing routing values.
