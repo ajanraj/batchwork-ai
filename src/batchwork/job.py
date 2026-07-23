@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Protocol, runtime_checkable
 
+from ._read_retry import _ReadRetryDeadlineExceeded, _retry_read
 from .errors import BatchTimeoutError
 from .types import (
     BatchRequestCounts,
@@ -98,10 +100,12 @@ class BatchJob:
         timeout_seconds: float | None,
         on_poll: PollCallback | None,
     ) -> BatchSnapshot:
-        if poll_interval < 0:
-            raise ValueError("poll_interval must be non-negative")
-        if timeout_seconds is not None and timeout_seconds < 0:
-            raise ValueError("timeout must be non-negative")
+        if not math.isfinite(poll_interval) or poll_interval <= 0:
+            raise ValueError("poll_interval must be finite and greater than zero")
+        if timeout_seconds is not None and (
+            not math.isfinite(timeout_seconds) or timeout_seconds < 0
+        ):
+            raise ValueError("timeout must be finite and non-negative")
         deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
 
         while True:
@@ -110,14 +114,18 @@ class BatchJob:
                 raise BatchTimeoutError(f'batchwork: timed out waiting for batch "{self.id}"')
 
             if remaining is None:
-                snapshot = await self.poll()
+                snapshot = await _retry_read(self.poll)
                 await _call(on_poll, snapshot)
             else:
                 poll_timeout = asyncio.timeout(remaining)
                 try:
                     async with poll_timeout:
-                        snapshot = await self.poll()
+                        snapshot = await _retry_read(self.poll, deadline=deadline)
                         await _call(on_poll, snapshot)
+                except _ReadRetryDeadlineExceeded:
+                    raise BatchTimeoutError(
+                        f'batchwork: timed out waiting for batch "{self.id}"'
+                    ) from None
                 except TimeoutError:
                     if not poll_timeout.expired():
                         raise

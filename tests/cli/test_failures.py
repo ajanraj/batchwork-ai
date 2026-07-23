@@ -14,8 +14,8 @@ from click.testing import CliRunner
 
 import batchwork.cli._commands as commands_module
 from batchwork._provider_failure import ProviderFailure, ProviderFailureError, ProviderFailureKind
+from batchwork._read_retry import _retry_delay, _retryable_read_failure
 from batchwork.cli._commands import cli
-from batchwork.cli._lifecycle import _retry_delay, _retryable_read_failure
 
 
 class _FailureHandler(BaseHTTPRequestHandler):
@@ -134,7 +134,7 @@ def test_provider_http_failures_map_to_safe_exact_envelopes(
 ) -> None:
     base_url, handler = failure_provider
     handler.status = status
-    monkeypatch.setattr("batchwork.cli._lifecycle._retry_delay", lambda *_: 0)
+    monkeypatch.setattr("batchwork._read_retry._retry_delay", lambda *_: 0)
 
     result = CliRunner().invoke(
         cli,

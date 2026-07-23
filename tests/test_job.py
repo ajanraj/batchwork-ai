@@ -1,8 +1,10 @@
 import asyncio
+import math
 from collections.abc import AsyncIterator
 
 import pytest
 
+from batchwork._provider_failure import ProviderFailure, ProviderFailureError, ProviderFailureKind
 from batchwork.errors import BatchClosedError, BatchTimeoutError
 from batchwork.job import BatchJob
 from batchwork.types import (
@@ -93,6 +95,27 @@ class TimeoutRetrieveAdapter(FakeAdapter):
         raise TimeoutError("provider timeout")
 
 
+class RetryableRetrieveAdapter(FakeAdapter):
+    def __init__(self, failures: int, *, retry_after_seconds: int | None = None) -> None:
+        super().__init__([BatchStatus.COMPLETED])
+        self.failures = failures
+        self.retry_after_seconds = retry_after_seconds
+        self.retrieve_calls = 0
+
+    async def retrieve(self, id: str, credentials: ProviderCredentials) -> BatchSnapshot:
+        self.retrieve_calls += 1
+        if self.retrieve_calls <= self.failures:
+            raise ProviderFailureError(
+                "provider unavailable",
+                ProviderFailure(
+                    ProviderFailureKind.UNAVAILABLE,
+                    status_code=503,
+                    retry_after_seconds=self.retry_after_seconds,
+                ),
+            )
+        return await super().retrieve(id, credentials)
+
+
 @pytest.mark.asyncio
 async def test_wait_polls_immediately_and_calls_sync_or_async_callback() -> None:
     adapter = FakeAdapter([BatchStatus.IN_PROGRESS, BatchStatus.COMPLETED])
@@ -102,7 +125,7 @@ async def test_wait_polls_immediately_and_calls_sync_or_async_callback() -> None
         seen.append(value.status)
 
     job = BatchJob(adapter, ProviderCredentials(), snapshot(BatchStatus.COMPLETED))
-    completed = await job.wait(poll_interval=0, timeout=1, on_poll=on_poll)
+    completed = await job.wait(poll_interval=0.001, timeout=1, on_poll=on_poll)
     assert completed.status is BatchStatus.COMPLETED
     assert seen == [BatchStatus.IN_PROGRESS, BatchStatus.COMPLETED]
 
@@ -142,10 +165,60 @@ async def test_wait_timeout_bounds_blocked_retrieve(retrieves_before_block: int)
         match='batchwork: timed out waiting for batch "batch_1"',
     ):
         async with asyncio.timeout(0.5):
-            await job.wait(poll_interval=0, timeout=0.01)
+            await job.wait(poll_interval=0.001, timeout=0.01)
 
     assert adapter.retrieve_calls == retrieves_before_block + 1
     assert adapter.retrieve_cancelled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("poll_interval", [0, -1, math.nan, math.inf, -math.inf])
+async def test_wait_rejects_non_positive_or_non_finite_poll_interval_before_polling(
+    poll_interval: float,
+) -> None:
+    statuses = [BatchStatus.COMPLETED]
+    callback_called = False
+
+    def on_poll(value: BatchSnapshot) -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    job = BatchJob(
+        FakeAdapter(statuses),
+        ProviderCredentials(),
+        snapshot(BatchStatus.IN_PROGRESS),
+    )
+
+    with pytest.raises(ValueError, match="poll_interval must be finite and greater than zero"):
+        await job.wait(poll_interval=poll_interval, on_poll=on_poll)
+
+    assert statuses == [BatchStatus.COMPLETED]
+    assert callback_called is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_seconds", [-1, math.nan, math.inf, -math.inf])
+async def test_wait_rejects_negative_or_non_finite_timeout_before_polling(
+    timeout_seconds: float,
+) -> None:
+    statuses = [BatchStatus.COMPLETED]
+    callback_called = False
+
+    def on_poll(value: BatchSnapshot) -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    job = BatchJob(
+        FakeAdapter(statuses),
+        ProviderCredentials(),
+        snapshot(BatchStatus.IN_PROGRESS),
+    )
+
+    with pytest.raises(ValueError, match="timeout must be finite and non-negative"):
+        await job.wait(timeout=timeout_seconds, on_poll=on_poll)
+
+    assert statuses == [BatchStatus.COMPLETED]
+    assert callback_called is False
 
 
 @pytest.mark.asyncio
@@ -199,6 +272,53 @@ async def test_wait_preserves_provider_timeout_error() -> None:
 
     with pytest.raises(TimeoutError, match="provider timeout"):
         await job.wait(timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_wait_retries_transient_provider_reads_without_changing_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def no_delay(seconds: float) -> None:
+        assert seconds >= 0
+
+    monkeypatch.setattr("batchwork._read_retry.asyncio.sleep", no_delay)
+    wait_adapter = RetryableRetrieveAdapter(failures=2)
+    job = BatchJob(
+        wait_adapter,
+        ProviderCredentials(),
+        snapshot(BatchStatus.IN_PROGRESS),
+    )
+
+    completed = await job.wait(timeout=1)
+
+    assert completed.status is BatchStatus.COMPLETED
+    assert wait_adapter.retrieve_calls == 3
+
+    poll_adapter = RetryableRetrieveAdapter(failures=2)
+    single_poll_job = BatchJob(
+        poll_adapter,
+        ProviderCredentials(),
+        snapshot(BatchStatus.IN_PROGRESS),
+    )
+    with pytest.raises(ProviderFailureError, match="provider unavailable"):
+        await single_poll_job.poll()
+    assert poll_adapter.retrieve_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_wait_retry_after_cannot_extend_local_deadline() -> None:
+    adapter = RetryableRetrieveAdapter(failures=3, retry_after_seconds=60)
+    job = BatchJob(
+        adapter,
+        ProviderCredentials(),
+        snapshot(BatchStatus.IN_PROGRESS),
+    )
+
+    with pytest.raises(BatchTimeoutError, match="timed out waiting"):
+        async with asyncio.timeout(0.5):
+            await job.wait(timeout=0.01)
+
+    assert adapter.retrieve_calls == 1
 
 
 @pytest.mark.asyncio
