@@ -53,6 +53,7 @@ class SnapshotResultsAdapter(FakeAdapter):
         super().__init__([BatchStatus.COMPLETED])
         self.retrieve_calls = 0
         self.result_calls = 0
+        self.snapshot_result_calls = 0
         self.result_snapshot: BatchSnapshot | None = None
 
     async def retrieve(self, id: str, credentials: ProviderCredentials) -> BatchSnapshot:
@@ -63,12 +64,12 @@ class SnapshotResultsAdapter(FakeAdapter):
         self, id: str, credentials: ProviderCredentials
     ) -> AsyncIterator[BatchResult]:
         self.result_calls += 1
-        raise AssertionError("snapshot-aware lifecycle path must not call results()")
-        yield BatchResult(custom_id="unused", status=BatchResultStatus.SUCCEEDED)
+        yield BatchResult(custom_id="a", status=BatchResultStatus.SUCCEEDED, text="hello")
 
     async def results_from_snapshot(
         self, value: BatchSnapshot, credentials: ProviderCredentials
     ) -> AsyncIterator[BatchResult]:
+        self.snapshot_result_calls += 1
         self.result_snapshot = value
         yield BatchResult(custom_id="a", status=BatchResultStatus.SUCCEEDED, text="hello")
 
@@ -367,8 +368,56 @@ async def test_internal_results_reuse_current_snapshot_for_output() -> None:
     assert [result.text async for result in job._results_from_current_snapshot()] == ["hello"]
     assert adapter.retrieve_calls == 0
     assert adapter.result_calls == 0
+    assert adapter.snapshot_result_calls == 1
     assert adapter.result_snapshot is job.snapshot
     assert job.status is BatchStatus.IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_wait_then_collect_reuses_terminal_snapshot() -> None:
+    adapter = SnapshotResultsAdapter()
+    job = BatchJob(adapter, ProviderCredentials(), snapshot(BatchStatus.IN_PROGRESS))
+
+    await job.wait(timeout=1)
+    assert [result.text for result in await job.collect()] == ["hello"]
+
+    assert adapter.retrieve_calls == 1
+    assert adapter.result_calls == 0
+    assert adapter.snapshot_result_calls == 1
+    assert adapter.result_snapshot is job.snapshot
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        BatchStatus.COMPLETED,
+        BatchStatus.FAILED,
+        BatchStatus.EXPIRED,
+        BatchStatus.CANCELLED,
+    ],
+)
+async def test_public_results_reuse_every_terminal_snapshot(status: BatchStatus) -> None:
+    adapter = SnapshotResultsAdapter()
+    job = BatchJob(adapter, ProviderCredentials(), snapshot(status))
+
+    assert [result.text async for result in job.results()] == ["hello"]
+    assert adapter.retrieve_calls == 0
+    assert adapter.result_calls == 0
+    assert adapter.snapshot_result_calls == 1
+    assert adapter.result_snapshot is job.snapshot
+
+
+@pytest.mark.asyncio
+async def test_public_results_refresh_nonterminal_snapshot() -> None:
+    adapter = SnapshotResultsAdapter()
+    job = BatchJob(adapter, ProviderCredentials(), snapshot(BatchStatus.IN_PROGRESS))
+
+    assert [result.text async for result in job.results()] == ["hello"]
+    assert adapter.retrieve_calls == 0
+    assert adapter.result_calls == 1
+    assert adapter.snapshot_result_calls == 0
+    assert adapter.result_snapshot is None
 
 
 @pytest.mark.asyncio

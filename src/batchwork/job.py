@@ -144,6 +144,10 @@ class BatchJob:
 
     async def results(self) -> AsyncIterator[BatchResult]:
         self._ensure_open()
+        if is_terminal_status(self.status):
+            async for result in self._results_from_current_snapshot():
+                yield result
+            return
         async for result in self._adapter.results(self.id, self._credentials):
             self._ensure_open()
             yield result
