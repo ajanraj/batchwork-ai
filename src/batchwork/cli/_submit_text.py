@@ -34,6 +34,7 @@ from batchwork.errors import (
 )
 from batchwork.job import BatchJob
 from batchwork.media import DefaultMediaResolver
+from batchwork.providers._capabilities import supports_batch_metadata
 from batchwork.types import (
     BatchDefaults,
     BatchEmbeddingDefaults,
@@ -448,7 +449,6 @@ def _prepare_submission(
     *,
     modality: Modality,
     endpoint: str | None,
-    metadata_providers: frozenset[BatchProvider],
 ) -> _PreparedSubmission:
     loaded = load_config(root.config)
     profile_name, profile = select_profile(loaded, root.profile)
@@ -456,7 +456,7 @@ def _prepare_submission(
     if selected_model is None:
         raise _usage(f"--model is required for submit {modality}.")
     spec = _model_spec(selected_model, endpoint)
-    if options.batch_metadata and spec.provider not in metadata_providers:
+    if options.batch_metadata and not supports_batch_metadata(spec.provider):
         raise CliUsageError(
             f"Provider {spec.provider.value} does not support submission-level batch metadata.",
             code="unsupported_setting",
@@ -625,14 +625,6 @@ async def submit_text(
         options,
         modality="text",
         endpoint=options.endpoint,
-        metadata_providers=frozenset(
-            {
-                BatchProvider.OPENAI,
-                BatchProvider.GROQ,
-                BatchProvider.MISTRAL,
-                BatchProvider.TOGETHER,
-            }
-        ),
     )
     spec = prepared.spec
     route = prepared.route
@@ -733,7 +725,6 @@ async def submit_embeddings(
         options,
         modality="embeddings",
         endpoint=None,
-        metadata_providers=frozenset({BatchProvider.OPENAI, BatchProvider.MISTRAL}),
     )
     spec = prepared.spec
     route = prepared.route
@@ -822,7 +813,6 @@ async def submit_images(
         options,
         modality="images",
         endpoint=None,
-        metadata_providers=frozenset({BatchProvider.OPENAI}),
     )
     spec = prepared.spec
     route = prepared.route

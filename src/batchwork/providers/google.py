@@ -19,6 +19,7 @@ from batchwork.types import (
     ProviderCredentials,
 )
 
+from ._capabilities import validate_batch_metadata
 from .ids import prefixed_provider_id
 from .shared import (
     api_key,
@@ -155,7 +156,7 @@ class GoogleAdapter:
         limits: BatchLimits | None = None,
         validate_upload: Callable[[int], None] | None = None,
     ) -> BatchSnapshot:
-        del metadata
+        validate_batch_metadata(self.id, metadata)
         embedding = "embedcontent" in endpoint.lower()
         method = "asyncBatchEmbedContent" if embedding else "batchGenerateContent"
         requests: list[dict[str, object]] = []

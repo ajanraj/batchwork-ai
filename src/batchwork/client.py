@@ -19,6 +19,7 @@ from .body import (
 from .errors import BatchClosedError, BatchworkError, _LimitExceededError
 from .job import BatchJob
 from .media import DefaultMediaResolver, MediaResolver, MediaSource, ResolvedMedia
+from .providers._capabilities import validate_batch_metadata
 from .providers.adapter import BatchAdapter
 from .types import (
     AssistantMessage,
@@ -233,6 +234,7 @@ class Batchwork:
         validate_upload: Callable[[int], None] | None,
     ) -> BatchJob:
         spec = resolve_model(model)
+        validate_batch_metadata(spec.provider, metadata)
         self._validate_requests(requests)
         limits = limits or BatchLimits()
         validate_request_count(requests, limits)
@@ -255,6 +257,7 @@ class Batchwork:
             defaults,
             limits,
             kind=spec.kind,
+            strict=True,
         )
         prepared = await self._resolve_request_media(
             spec,
@@ -265,7 +268,13 @@ class Batchwork:
             budget=media_budget,
         )
         built = build_text_bodies(
-            spec.provider, spec.model_id, prepared, defaults, limits, kind=spec.kind
+            spec.provider,
+            spec.model_id,
+            prepared,
+            defaults,
+            limits,
+            kind=spec.kind,
+            strict=True,
         )
         if validate_upload is None:
             snapshot = await adapter.submit(
@@ -329,13 +338,19 @@ class Batchwork:
         validate_upload: Callable[[int], None] | None,
     ) -> BatchJob:
         spec = resolve_model(model)
+        validate_batch_metadata(spec.provider, metadata)
         self._validate_requests(requests)
         adapter, resolved_credentials = self._adapter_and_credentials(
             spec.provider, credentials, api_key=api_key, base_url=base_url, headers=headers
         )
         limits = limits or BatchLimits()
         built = build_embedding_bodies(
-            spec.provider, spec.model_id, requests, limits, defaults=defaults
+            spec.provider,
+            spec.model_id,
+            requests,
+            limits,
+            defaults=defaults,
+            strict=True,
         )
         if validate_upload is None:
             snapshot = await adapter.submit(
@@ -399,6 +414,7 @@ class Batchwork:
         validate_upload: Callable[[int], None] | None,
     ) -> BatchJob:
         spec = resolve_model(model)
+        validate_batch_metadata(spec.provider, metadata)
         self._validate_requests(requests)
         adapter, resolved_credentials = self._adapter_and_credentials(
             spec.provider, credentials, api_key=api_key, base_url=base_url, headers=headers

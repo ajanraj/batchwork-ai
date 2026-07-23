@@ -10,6 +10,9 @@ from batchwork.body import BuiltRequest
 from batchwork.errors import BatchClosedError, BatchworkError, MediaResolutionError
 from batchwork.media import ResolvedMedia
 from batchwork.types import (
+    BatchDefaults,
+    BatchEmbeddingDefaults,
+    BatchEmbeddingRequest,
     BatchImageRequest,
     BatchLimits,
     BatchProvider,
@@ -96,6 +99,110 @@ async def test_client_routes_submission_and_merges_credentials(monkeypatch) -> N
     assert adapter.credentials is not None
     assert adapter.credentials.api_key == "per-call"
     assert adapter.credentials.headers == {"x-base": "1", "x-replace": "call"}
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("batch_request", "defaults", "message"),
+    (
+        (
+            BatchRequest(prompt="hello"),
+            BatchDefaults(top_k=7),
+            'canonical setting "top_k" is unsupported',
+        ),
+        (
+            BatchRequest(prompt="hello", top_k=7),
+            None,
+            'canonical setting "top_k" is unsupported',
+        ),
+        (
+            BatchRequest(prompt="hello"),
+            BatchDefaults(provider_options={"openai": {"unknownOption": True}}),
+            'provider option "unknownOption" is unsupported',
+        ),
+        (
+            BatchRequest(prompt="hello"),
+            BatchDefaults(
+                max_output_tokens=32,
+                provider_options={"openai": {"maxCompletionTokens": 64}},
+            ),
+            "max_output_tokens conflicts with OpenAI provider option maxCompletionTokens",
+        ),
+    ),
+)
+async def test_client_strictly_validates_text_requests_before_submission(
+    monkeypatch,
+    batch_request: BatchRequest,
+    defaults: BatchDefaults | None,
+    message: str,
+) -> None:
+    adapter = FakeAdapter()
+    monkeypatch.setattr(client_module, "_get_adapter", lambda provider, client: adapter)
+    client = Batchwork()
+
+    with pytest.raises(BatchworkError, match=message):
+        await client.batch(
+            model="openai/gpt-4.1",
+            requests=[batch_request],
+            defaults=defaults,
+        )
+
+    assert adapter.built == []
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_strictly_validates_embedding_options_before_submission(monkeypatch) -> None:
+    adapter = FakeAdapter()
+    monkeypatch.setattr(client_module, "_get_adapter", lambda provider, client: adapter)
+    client = Batchwork()
+
+    with pytest.raises(BatchworkError, match='provider option "unknownOption"'):
+        await client.batch_embeddings(
+            model="mistral/mistral-embed",
+            requests=[BatchEmbeddingRequest(value="hello")],
+            defaults=BatchEmbeddingDefaults(provider_options={"mistral": {"unknownOption": True}}),
+        )
+
+    assert adapter.built == []
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("modality", ["text", "embeddings", "images"])
+async def test_client_rejects_unsupported_batch_metadata_before_adapter_lookup(
+    monkeypatch, modality: str
+) -> None:
+    def unexpected_adapter_lookup(provider, client):
+        raise AssertionError("metadata validation must precede adapter lookup")
+
+    monkeypatch.setattr(client_module, "_get_adapter", unexpected_adapter_lookup)
+    client = Batchwork()
+
+    with pytest.raises(
+        BatchworkError,
+        match='provider "google" does not support submission-level batch metadata',
+    ):
+        if modality == "text":
+            await client.batch(
+                model="google/gemini-2.5-flash",
+                requests=[BatchRequest(prompt="hello")],
+                metadata={"purpose": "test"},
+            )
+        elif modality == "embeddings":
+            await client.batch_embeddings(
+                model="google/gemini-embedding-001",
+                requests=[BatchEmbeddingRequest(value="hello")],
+                metadata={"purpose": "test"},
+            )
+        else:
+            await client.batch_images(
+                model="google/gemini-3-pro-image-preview",
+                requests=[BatchImageRequest(prompt="hello")],
+                metadata={"purpose": "test"},
+            )
+
     await client.aclose()
 
 

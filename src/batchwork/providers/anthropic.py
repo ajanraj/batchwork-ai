@@ -19,6 +19,7 @@ from batchwork.types import (
     ProviderCredentials,
 )
 
+from ._capabilities import validate_batch_metadata
 from .ids import simple_provider_id
 from .shared import (
     api_key,
@@ -116,7 +117,8 @@ class AnthropicAdapter:
         limits: BatchLimits | None = None,
         validate_upload: Callable[[int], None] | None = None,
     ) -> BatchSnapshot:
-        del endpoint, model_id, metadata
+        validate_batch_metadata(self.id, metadata)
+        del endpoint, model_id
         requests = [
             {
                 "custom_id": item.custom_id,

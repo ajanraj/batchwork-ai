@@ -480,7 +480,9 @@ def test_submit_text_rejects_unsupported_batch_metadata_before_provider_work(
     assert result.exit_code == 2
     error = json.loads(result.stderr)["error"]
     assert error["code"] == "unsupported_setting"
-    assert "batch metadata" in error["message"]
+    assert error["message"] == (
+        f"Provider {provider} does not support submission-level batch metadata."
+    )
     assert provider_requests == []
 
 

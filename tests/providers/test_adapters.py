@@ -13,8 +13,9 @@ from batchwork._base_url import BaseUrlError
 from batchwork._network import AddressResolutionFailure, AddressResolutionFailureReason
 from batchwork._provider_failure import ProviderFailureError, ProviderFailureKind
 from batchwork.body import BuiltRequest
-from batchwork.errors import BatchworkError
+from batchwork.errors import BatchworkError, _UnsupportedSettingError
 from batchwork.providers import get_adapter
+from batchwork.providers._capabilities import supports_batch_metadata
 from batchwork.providers.shared import (
     embedding_from_body,
     jsonl,
@@ -25,6 +26,54 @@ from batchwork.providers.shared import (
 from batchwork.types import BatchLimits, BatchProvider, ProviderCredentials
 
 _GOOGLE_INLINE_BATCH_MAX_BYTES = 20 * 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    ("provider", "supported"),
+    (
+        (BatchProvider.OPENAI, True),
+        (BatchProvider.ANTHROPIC, False),
+        (BatchProvider.GOOGLE, False),
+        (BatchProvider.GROQ, True),
+        (BatchProvider.MISTRAL, True),
+        (BatchProvider.TOGETHER, True),
+        (BatchProvider.XAI, False),
+    ),
+)
+def test_batch_metadata_capability_is_shared(provider: BatchProvider, supported: bool) -> None:
+    assert supports_batch_metadata(provider) is supported
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider",
+    (BatchProvider.ANTHROPIC, BatchProvider.GOOGLE, BatchProvider.XAI),
+)
+async def test_native_adapter_rejects_unsupported_batch_metadata_before_request(
+    provider: BatchProvider,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise AssertionError("metadata rejection must happen before provider work")
+
+    built = BuiltRequest(body={"model": "model"}, custom_id="a", endpoint="/endpoint")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = get_adapter(provider, http_client=client)
+        with pytest.raises(
+            _UnsupportedSettingError,
+            match=f'provider "{provider.value}" does not support submission-level batch metadata',
+        ):
+            await adapter.submit(
+                built=[built],
+                credentials=ProviderCredentials(api_key="secret"),
+                endpoint="/endpoint",
+                model_id="model",
+                metadata={"purpose": "test"},
+            )
+
+    assert requests == []
 
 
 @pytest.mark.asyncio
