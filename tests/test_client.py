@@ -36,6 +36,7 @@ class FakeAdapter:
     def __init__(self) -> None:
         self.credentials: ProviderCredentials | None = None
         self.built: Sequence[BuiltRequest] = []
+        self.metadata: Mapping[str, str] | None = None
         self.retrieve_calls = 0
         self.result_calls = 0
 
@@ -51,6 +52,7 @@ class FakeAdapter:
     ) -> BatchSnapshot:
         self.credentials = credentials
         self.built = built
+        self.metadata = metadata
         return BatchSnapshot(
             id="batch_1",
             provider=BatchProvider.OPENAI,
@@ -203,6 +205,38 @@ async def test_client_rejects_unsupported_batch_metadata_before_adapter_lookup(
                 metadata={"purpose": "test"},
             )
 
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("modality", ["text", "embeddings", "images"])
+async def test_client_treats_empty_unsupported_batch_metadata_as_omitted(
+    monkeypatch, modality: str
+) -> None:
+    adapter = FakeAdapter()
+    monkeypatch.setattr(client_module, "_get_adapter", lambda provider, client: adapter)
+    client = Batchwork()
+
+    if modality == "text":
+        await client.batch(
+            model="google/gemini-2.5-flash",
+            requests=[BatchRequest(prompt="hello")],
+            metadata={},
+        )
+    elif modality == "embeddings":
+        await client.batch_embeddings(
+            model="google/gemini-embedding-001",
+            requests=[BatchEmbeddingRequest(value="hello")],
+            metadata={},
+        )
+    else:
+        await client.batch_images(
+            model="google/gemini-3-pro-image-preview",
+            requests=[BatchImageRequest(prompt="hello")],
+            metadata={},
+        )
+
+    assert adapter.metadata == {}
     await client.aclose()
 
 

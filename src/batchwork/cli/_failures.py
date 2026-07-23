@@ -118,7 +118,11 @@ def provider_failure(
     if failure is None:
         return None
     code, category, exit_code, message = _provider_mapping(failure)
-    retryable = category == "provider_availability" and not submission
+    retryable = (
+        category == "provider_availability"
+        and failure.kind is not ProviderFailureKind.PROTOCOL
+        and not submission
+    )
     submission_outcome = None
     recovery = None
     if submission:
@@ -138,6 +142,12 @@ def provider_failure(
             submission_outcome = "unknown"
             recovery = Recovery(action="inspect_provider_account")
         retryable = False
+    elif failure.kind is ProviderFailureKind.PROTOCOL:
+        message = (
+            "The provider returned an invalid lifecycle response. The remote job was not "
+            "modified and local state was not advanced. Check provider compatibility or "
+            "upgrade Batchwork before retrying."
+        )
     if (
         result_stream
         and category == "provider_availability"

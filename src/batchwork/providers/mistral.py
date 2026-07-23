@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 
 import httpx
 
+from batchwork._provider_failure import ProviderFailure, protocol_failure
 from batchwork.body import BuiltRequest
 from batchwork.errors import BatchworkError
 from batchwork.types import (
@@ -14,6 +15,7 @@ from batchwork.types import (
     BatchProvider,
     BatchResult,
     BatchSnapshot,
+    BatchStatus,
     ProviderCredentials,
 )
 
@@ -23,11 +25,24 @@ from .shared import (
     base_url,
     encode_jsonl,
     merge_headers,
+    normalize_batch_status,
+    request,
     request_json,
+    response_json,
     stream_result_file,
     timestamp,
     upload_file,
 )
+
+_STATUSES = {
+    "queued": BatchStatus.VALIDATING,
+    "running": BatchStatus.IN_PROGRESS,
+    "success": BatchStatus.COMPLETED,
+    "failed": BatchStatus.FAILED,
+    "timeout_exceeded": BatchStatus.EXPIRED,
+    "cancellation_requested": BatchStatus.CANCELLING,
+    "cancelled": BatchStatus.CANCELLED,
+}
 
 
 class MistralAdapter:
@@ -43,15 +58,7 @@ class MistralAdapter:
         key = api_key(credentials, ["MISTRAL_API_KEY"], "Mistral")
         return merge_headers({"Authorization": f"Bearer {key}"}, credentials)
 
-    def _snapshot(self, raw: Mapping[str, object]) -> BatchSnapshot:
-        statuses = {
-            "QUEUED": "validating",
-            "SUCCESS": "completed",
-            "FAILED": "failed",
-            "TIMEOUT_EXCEEDED": "expired",
-            "CANCELLATION_REQUESTED": "cancelling",
-            "CANCELLED": "cancelled",
-        }
+    def _snapshot(self, raw: Mapping[str, object], failure: ProviderFailure) -> BatchSnapshot:
         raw_succeeded = raw.get("succeeded_requests")
         raw_failed = raw.get("failed_requests")
         raw_total = raw.get("total_requests")
@@ -66,9 +73,12 @@ class MistralAdapter:
                 if isinstance(raw_id, str)
                 else "",
                 "provider": self.id,
-                "status": statuses.get(raw_status, "in_progress")
-                if isinstance(raw_status, str)
-                else "in_progress",
+                "status": normalize_batch_status(
+                    raw_status,
+                    _STATUSES,
+                    provider_label="Mistral",
+                    failure=failure,
+                ),
                 "raw": dict(raw),
                 "created_at": timestamp(raw.get("created_at")),
                 "completed_at": timestamp(raw.get("completed_at")),
@@ -104,24 +114,28 @@ class MistralAdapter:
         }
         if metadata is not None:
             create_body["metadata"] = dict(metadata)
-        raw = await request_json(
+        create_url = f"{url}/batch/jobs"
+        response = await request(
             self._client,
             "POST",
-            f"{url}/batch/jobs",
+            create_url,
             headers={**headers, "content-type": "application/json"},
             content=json.dumps(create_body),
         )
-        return self._snapshot(raw)
+        raw = response_json(response, "POST", create_url)
+        return self._snapshot(raw, protocol_failure(response))
 
     async def retrieve(self, id: str, credentials: ProviderCredentials) -> BatchSnapshot:
         job_id = simple_provider_id("Mistral job id", id)
-        raw = await request_json(
+        retrieve_url = f"{self._base(credentials)}/batch/jobs/{job_id}"
+        response = await request(
             self._client,
             "GET",
-            f"{self._base(credentials)}/batch/jobs/{job_id}",
+            retrieve_url,
             headers=self._headers(credentials),
         )
-        return self._snapshot(raw)
+        raw = response_json(response, "GET", retrieve_url)
+        return self._snapshot(raw, protocol_failure(response))
 
     async def results(
         self, id: str, credentials: ProviderCredentials

@@ -14,6 +14,7 @@ from batchwork._network import (
     resolve_public_addresses,
 )
 from batchwork._provider_failure import (
+    ProviderFailure,
     ProviderFailureError,
     http_failure,
     protocol_failure,
@@ -26,6 +27,7 @@ from batchwork.types import (
     BatchProvider,
     BatchResult,
     BatchSnapshot,
+    BatchStatus,
     ProviderCredentials,
 )
 
@@ -35,7 +37,10 @@ from .shared import (
     base_url,
     encode_jsonl,
     merge_headers,
+    normalize_batch_status,
+    request,
     request_json,
+    response_json,
     stream_result_file,
     timestamp,
     upload_file,
@@ -193,19 +198,16 @@ async def _upload_together_file(
         return await _upload_together_file_with_client(owned, base, headers, payload, purpose)
 
 
-def _status(value: object) -> str:
-    if isinstance(value, str) and value.lower() in {
-        "validating",
-        "in_progress",
-        "finalizing",
-        "completed",
-        "failed",
-        "expired",
-        "cancelling",
-        "cancelled",
-    }:
-        return value.lower()
-    return "in_progress"
+_STATUSES = {
+    "validating": BatchStatus.VALIDATING,
+    "in_progress": BatchStatus.IN_PROGRESS,
+    "finalizing": BatchStatus.FINALIZING,
+    "completed": BatchStatus.COMPLETED,
+    "failed": BatchStatus.FAILED,
+    "expired": BatchStatus.EXPIRED,
+    "cancelling": BatchStatus.CANCELLING,
+    "cancelled": BatchStatus.CANCELLED,
+}
 
 
 class OpenAICompatibleAdapter:
@@ -245,7 +247,7 @@ class OpenAICompatibleAdapter:
         key = api_key(credentials, [self._env_var], self._label)
         return merge_headers({"Authorization": f"Bearer {key}"}, credentials)
 
-    def _snapshot(self, raw: Mapping[str, object]) -> BatchSnapshot:
+    def _snapshot(self, raw: Mapping[str, object], failure: ProviderFailure) -> BatchSnapshot:
         nested = raw.get("job")
         source = nested if isinstance(nested, Mapping) else raw
         counts_value = source.get("request_counts")
@@ -254,7 +256,12 @@ class OpenAICompatibleAdapter:
             {
                 "id": source.get("id") if isinstance(source.get("id"), str) else "",
                 "provider": self.id,
-                "status": _status(source.get("status")),
+                "status": normalize_batch_status(
+                    source.get("status"),
+                    _STATUSES,
+                    provider_label=self._label,
+                    failure=failure,
+                ),
                 "raw": dict(source),
                 "created_at": timestamp(source.get("created_at")),
                 "completed_at": timestamp(source.get("completed_at")),
@@ -313,24 +320,28 @@ class OpenAICompatibleAdapter:
         }
         if metadata is not None:
             create_body["metadata"] = dict(metadata)
-        raw = await request_json(
+        create_url = f"{url}/batches"
+        response = await request(
             self._client,
             "POST",
-            f"{url}/batches",
+            create_url,
             headers={**headers, "content-type": "application/json"},
             content=json.dumps(create_body),
         )
-        return self._snapshot(raw)
+        raw = response_json(response, "POST", create_url)
+        return self._snapshot(raw, protocol_failure(response))
 
     async def retrieve(self, id: str, credentials: ProviderCredentials) -> BatchSnapshot:
         batch_id = simple_provider_id(f"{self.id.value} batch id", id)
-        raw = await request_json(
+        retrieve_url = f"{self._base(credentials)}/batches/{batch_id}"
+        response = await request(
             self._client,
             "GET",
-            f"{self._base(credentials)}/batches/{batch_id}",
+            retrieve_url,
             headers=self._headers(credentials),
         )
-        return self._snapshot(raw)
+        raw = response_json(response, "GET", retrieve_url)
+        return self._snapshot(raw, protocol_failure(response))
 
     async def results(
         self, id: str, credentials: ProviderCredentials

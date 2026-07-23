@@ -36,6 +36,7 @@ from .shared import (
 )
 
 _RESULT_PAGE_SIZE = 100
+_MAX_RESULT_PAGES = 10_000
 _TOKEN_FINGERPRINT_LENGTH = 12
 
 
@@ -196,6 +197,12 @@ class XAIAdapter:
                         yield result
             if next_token is None:
                 return
+            if page_count >= _MAX_RESULT_PAGES:
+                raise _pagination_failure(
+                    "batchwork: xAI result pagination exceeded the "
+                    f"{_MAX_RESULT_PAGES:,}-page safety limit after "
+                    f"{emitted_count:,} records; stopped before requesting another page."
+                )
             token = next_token
 
     def _result(self, item: Mapping[str, object]) -> BatchResult:

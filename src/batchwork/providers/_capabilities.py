@@ -26,7 +26,7 @@ def supports_batch_metadata(provider: BatchProvider) -> bool:
 def validate_batch_metadata(provider: BatchProvider, metadata: Mapping[str, str] | None) -> None:
     """Reject unsupported batch metadata before provider-side mutation."""
 
-    if metadata is not None and not supports_batch_metadata(provider):
+    if metadata and not supports_batch_metadata(provider):
         raise _UnsupportedSettingError(
             f'batchwork: provider "{provider.value}" does not support '
             "submission-level batch metadata."

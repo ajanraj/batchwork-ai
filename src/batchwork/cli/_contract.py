@@ -731,7 +731,8 @@ def reference_document() -> str:
     lines = [
         "---",
         "title: CLI machine schema",
-        "description: Generated schema-v1 envelopes and credential-free examples.",
+        'description: "Generated schema-v1 envelopes and credential-free examples for '
+        'machine-readable batchwork CLI stdout and stderr."',
         "---",
         "",
         "This page is generated from Batchwork's typed machine-output models. "

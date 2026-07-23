@@ -19,6 +19,7 @@ from batchwork._limits import (
     MAX_UPLOAD_BYTES,
 )
 from batchwork._provider_failure import (
+    ProviderFailure,
     ProviderFailureError,
     http_failure,
     protocol_failure,
@@ -26,7 +27,14 @@ from batchwork._provider_failure import (
 )
 from batchwork._typing import is_string_mapping
 from batchwork.errors import BatchworkError, _LimitExceededError
-from batchwork.types import BatchImage, BatchLimits, BatchResult, BatchUsage, ProviderCredentials
+from batchwork.types import (
+    BatchImage,
+    BatchLimits,
+    BatchResult,
+    BatchStatus,
+    BatchUsage,
+    ProviderCredentials,
+)
 
 
 def api_key(credentials: ProviderCredentials, env_vars: Sequence[str], label: str) -> str:
@@ -49,6 +57,29 @@ def base_url(credentials: ProviderCredentials, default: str) -> str:
 
 def merge_headers(defaults: Mapping[str, str], credentials: ProviderCredentials) -> dict[str, str]:
     return {**defaults, **credentials.headers}
+
+
+def normalize_batch_status(
+    value: object,
+    statuses: Mapping[str, BatchStatus],
+    *,
+    provider_label: str,
+    failure: ProviderFailure,
+) -> BatchStatus:
+    """Normalize a documented provider status or fail closed."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise ProviderFailureError(
+            f"batchwork: {provider_label} returned a missing or malformed batch status.",
+            failure,
+        )
+    status = statuses.get(value.strip().casefold())
+    if status is None:
+        raise ProviderFailureError(
+            f"batchwork: {provider_label} returned an unrecognized batch status.",
+            failure,
+        )
+    return status
 
 
 def max_upload_bytes(limits: BatchLimits | None) -> int:

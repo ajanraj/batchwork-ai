@@ -172,6 +172,7 @@ def test_invalid_provider_json_maps_to_protocol_failure(
     assert result.stdout == ""
     error = json.loads(result.stderr)["error"]
     assert error["code"] == "provider_protocol_error"
+    assert error["retryable"] is False
     assert error["http_status"] == 200
     assert error["request_id"] == "req_safe"
     assert "secret-provider-body" not in result.stderr

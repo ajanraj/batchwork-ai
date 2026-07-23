@@ -38,6 +38,7 @@ class _LifecycleHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Request-ID", "req_safe")
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -520,6 +521,36 @@ def test_installed_results_never_waits_for_nonterminal_job(
     assert result.returncode == 6
     assert result.stdout == ""
     assert json.loads(result.stderr)["error"]["code"] == "results_not_ready"
+    assert handler.requests == [("GET", "/v1/batches/batch_123")]
+
+
+@pytest.mark.parametrize("command", ["status", "wait", "results"])
+def test_lifecycle_commands_fail_closed_on_unknown_provider_status(
+    command: str,
+    tmp_path: Path,
+    lifecycle_provider: tuple[str, type[_LifecycleHandler]],
+) -> None:
+    base_url, handler = lifecycle_provider
+    handler.statuses = ["secret-future-status"]
+
+    result = subprocess.run(
+        [_batchwork(), "--json", command, *_direct(base_url)],
+        cwd=tmp_path,
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 5
+    assert result.stdout == ""
+    error = json.loads(result.stderr)["error"]
+    assert error["code"] == "provider_protocol_error"
+    assert error["retryable"] is False
+    assert error["request_id"] == "req_safe"
+    assert "remote job was not modified" in error["message"].lower()
+    assert "local state was not advanced" in error["message"].lower()
+    assert "secret-future-status" not in result.stderr
     assert handler.requests == [("GET", "/v1/batches/batch_123")]
 
 

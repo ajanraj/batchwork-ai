@@ -117,6 +117,19 @@ class RetryableRetrieveAdapter(FakeAdapter):
         return await super().retrieve(id, credentials)
 
 
+class ProtocolRetrieveAdapter(FakeAdapter):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.retrieve_calls = 0
+
+    async def retrieve(self, id: str, credentials: ProviderCredentials) -> BatchSnapshot:
+        self.retrieve_calls += 1
+        raise ProviderFailureError(
+            "invalid provider status",
+            ProviderFailure(ProviderFailureKind.PROTOCOL, status_code=200),
+        )
+
+
 @pytest.mark.asyncio
 async def test_wait_polls_immediately_and_calls_sync_or_async_callback() -> None:
     adapter = FakeAdapter([BatchStatus.IN_PROGRESS, BatchStatus.COMPLETED])
@@ -304,6 +317,28 @@ async def test_wait_retries_transient_provider_reads_without_changing_poll(
     with pytest.raises(ProviderFailureError, match="provider unavailable"):
         await single_poll_job.poll()
     assert poll_adapter.retrieve_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_protocol_status_failure_is_not_retried_and_preserves_snapshot() -> None:
+    initial = snapshot(BatchStatus.IN_PROGRESS)
+    poll_adapter = ProtocolRetrieveAdapter()
+    poll_job = BatchJob(poll_adapter, ProviderCredentials(), initial)
+
+    with pytest.raises(ProviderFailureError, match="invalid provider status"):
+        await poll_job.poll()
+
+    assert poll_adapter.retrieve_calls == 1
+    assert poll_job.snapshot is initial
+
+    wait_adapter = ProtocolRetrieveAdapter()
+    wait_job = BatchJob(wait_adapter, ProviderCredentials(), initial)
+
+    with pytest.raises(ProviderFailureError, match="invalid provider status"):
+        await wait_job.wait(timeout=1)
+
+    assert wait_adapter.retrieve_calls == 1
+    assert wait_job.snapshot is initial
 
 
 @pytest.mark.asyncio

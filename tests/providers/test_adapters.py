@@ -9,6 +9,7 @@ import pytest
 
 import batchwork.providers.openai_compatible as compatible_module
 import batchwork.providers.shared as shared_module
+import batchwork.providers.xai as xai_module
 from batchwork._base_url import BaseUrlError
 from batchwork._network import AddressResolutionFailure, AddressResolutionFailureReason
 from batchwork._provider_failure import ProviderFailureError, ProviderFailureKind
@@ -42,6 +43,128 @@ _GOOGLE_INLINE_BATCH_MAX_BYTES = 20 * 1024 * 1024
 )
 def test_batch_metadata_capability_is_shared(provider: BatchProvider, supported: bool) -> None:
     assert supports_batch_metadata(provider) is supported
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider",
+    (BatchProvider.OPENAI, BatchProvider.GROQ, BatchProvider.TOGETHER),
+)
+@pytest.mark.parametrize(
+    ("raw_status", "expected"),
+    (
+        ("validating", BatchStatus.VALIDATING),
+        ("in_progress", BatchStatus.IN_PROGRESS),
+        ("finalizing", BatchStatus.FINALIZING),
+        ("completed", BatchStatus.COMPLETED),
+        ("failed", BatchStatus.FAILED),
+        ("expired", BatchStatus.EXPIRED),
+        ("cancelling", BatchStatus.CANCELLING),
+        ("cancelled", BatchStatus.CANCELLED),
+    ),
+)
+async def test_openai_compatible_statuses_are_explicitly_normalized(
+    provider: BatchProvider, raw_status: str, expected: BatchStatus
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"id": "batch_1", "status": f" {raw_status.upper()} ", "request_counts": {}},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        snapshot = await get_adapter(provider, http_client=client).retrieve(
+            "batch_1", ProviderCredentials(api_key="secret")
+        )
+
+    assert snapshot.status is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_status", "expected"),
+    (
+        ("QUEUED", BatchStatus.VALIDATING),
+        ("RUNNING", BatchStatus.IN_PROGRESS),
+        ("SUCCESS", BatchStatus.COMPLETED),
+        ("FAILED", BatchStatus.FAILED),
+        ("TIMEOUT_EXCEEDED", BatchStatus.EXPIRED),
+        ("CANCELLATION_REQUESTED", BatchStatus.CANCELLING),
+        ("CANCELLED", BatchStatus.CANCELLED),
+    ),
+)
+async def test_mistral_statuses_are_explicitly_normalized(
+    raw_status: str, expected: BatchStatus
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"id": "job_1", "status": f" {raw_status.lower()} ", "total_requests": 0},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        snapshot = await get_adapter(BatchProvider.MISTRAL, http_client=client).retrieve(
+            "job_1", ProviderCredentials(api_key="secret")
+        )
+
+    assert snapshot.status is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider",
+    (BatchProvider.OPENAI, BatchProvider.GROQ, BatchProvider.TOGETHER, BatchProvider.MISTRAL),
+)
+@pytest.mark.parametrize(
+    ("status_present", "raw_status", "message"),
+    (
+        (False, None, "missing or malformed"),
+        (True, None, "missing or malformed"),
+        (True, 1, "missing or malformed"),
+        (True, {"state": "secret-nested-status"}, "missing or malformed"),
+        (True, ["secret-list-status"], "missing or malformed"),
+        (True, "", "missing or malformed"),
+        (True, " \t\n", "missing or malformed"),
+        (True, "secret-future-status\nwith-control", "unrecognized"),
+    ),
+)
+async def test_unknown_provider_statuses_fail_closed_with_safe_response_metadata(
+    provider: BatchProvider,
+    status_present: bool,
+    raw_status: object,
+    message: str,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payload: dict[str, object] = {
+            "id": "job_1" if provider is BatchProvider.MISTRAL else "batch_1",
+            "secret_response_field": "secret-provider-body",
+        }
+        if status_present:
+            payload["status"] = raw_status
+        return httpx.Response(
+            200,
+            json=payload,
+            headers={"request-id": "req_safe", "x-secret-header": "secret-header"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = get_adapter(provider, http_client=client)
+        with pytest.raises(ProviderFailureError, match=message) as caught:
+            await adapter.retrieve(
+                "job_1" if provider is BatchProvider.MISTRAL else "batch_1",
+                ProviderCredentials(api_key="credential-secret"),
+            )
+
+    assert len(requests) == 1
+    assert caught.value.failure.kind is ProviderFailureKind.PROTOCOL
+    assert caught.value.failure.status_code == 200
+    assert caught.value.failure.request_id == "req_safe"
+    rendered = str(caught.value)
+    assert "secret" not in rendered
+    assert "credential-secret" not in rendered
 
 
 @pytest.mark.asyncio
@@ -1302,6 +1425,69 @@ async def test_xai_follows_unique_pagination_tokens_until_provider_ends_results(
     assert len(requests) == final_page
     assert len(emitted) == final_page
     assert emitted[-1] == f"request-{final_page}"
+
+
+@pytest.mark.asyncio
+async def test_xai_accepts_exactly_maximum_result_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(xai_module, "_MAX_RESULT_PAGES", 3)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        page = len(requests)
+        return httpx.Response(
+            200,
+            json={
+                "pagination_token": f"next-{page}" if page < 3 else None,
+                "results": [{"batch_request_id": f"request-{page}", "error_message": "failed"}],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        emitted = [
+            item.custom_id
+            async for item in get_adapter(BatchProvider.XAI, http_client=client).results(
+                "batch_1", ProviderCredentials(api_key="secret")
+            )
+        ]
+
+    assert len(requests) == 3
+    assert emitted == ["request-1", "request-2", "request-3"]
+
+
+@pytest.mark.asyncio
+async def test_xai_stops_before_requesting_page_after_maximum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(xai_module, "_MAX_RESULT_PAGES", 3)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        page = len(requests)
+        return httpx.Response(
+            200,
+            json={
+                "pagination_token": f"secret-next-{page}",
+                "results": [{"batch_request_id": f"request-{page}", "error_message": "failed"}],
+            },
+        )
+
+    emitted: list[str] = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ProviderFailureError) as caught:
+            async for item in get_adapter(BatchProvider.XAI, http_client=client).results(
+                "batch_1", ProviderCredentials(api_key="secret")
+            ):
+                emitted.append(item.custom_id)
+
+    assert len(requests) == 3
+    assert emitted == ["request-1", "request-2", "request-3"]
+    assert caught.value.failure.kind is ProviderFailureKind.PROTOCOL
+    assert "3-page safety limit after 3 records" in str(caught.value)
+    assert "secret-next" not in str(caught.value)
 
 
 @pytest.mark.asyncio
