@@ -59,7 +59,7 @@ Generic `n` and `aspect_ratio` are supported. Generic `size` and `seed` are not 
 2. Batchwork uploads the file through `/files` without a purpose.
 3. `/batches` receives the file ID and fixed name `batchwork`.
 4. `poll()` retrieves `/batches/{id}`.
-5. `results()` requests up to 100 records per page and follows `pagination_token`.
+5. `results()` requests up to 100 records per page and follows `pagination_token`, with a 10,000-page safety ceiling.
 6. `cancel()` calls `/batches/{id}:cancel`.
 
 Batch status is normalized from xAI request counts: pending work is in progress; all-canceled work is canceled; otherwise a batch with no pending requests is completed, even if some items errored.
@@ -81,6 +81,8 @@ Exact image option keys are `aspect_ratio`, `output_format`, `quality`, `resolut
 Text results normalize output text and usage. Image normalization accepts `data`, a `url`, or both. The serializer requests base64-oriented image output, but provider-returned URLs may be signed and short-lived; consume them promptly.
 
 Errors may arrive through top-level `error_message` or nested error data. Successful results retain the selected completion object in `result.response`; errored results retain the raw result item.
+
+Result pagination rejects continuation-token cycles and duplicate result IDs. It processes at most 10,000 pages, then raises a non-retryable provider protocol error before requesting page 10,001. Errors report safely consumed page and record counts without exposing continuation tokens.
 
 xAI does not support embeddings through Batchwork.
 

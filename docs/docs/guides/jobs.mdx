@@ -61,6 +61,8 @@ snapshot = await job.wait(
 
 Transient status-read failures are retried up to three attempts with bounded jittered backoff. Provider `Retry-After` guidance is honored up to 60 seconds without extending the local timeout. `poll()` remains a single provider request.
 
+Unknown, missing, or malformed OpenAI-compatible and Mistral lifecycle statuses fail as non-retryable provider protocol errors. Batchwork does not invent a normalized state: the cached snapshot and local registry remain unchanged, and the remote job is not modified. Check provider compatibility or upgrade Batchwork before retrying manually.
+
 Use `on_poll` to observe each refreshed snapshot:
 
 ```python

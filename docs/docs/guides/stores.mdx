@@ -1,6 +1,6 @@
 ---
 title: Stores
-description: 'Persist batches watched by BatchPoller with MemoryBatchStore, RedisBatchStore, or a custom BatchStore implementation.'
+description: "Persist batches watched by BatchPoller with MemoryBatchStore, RedisBatchStore, or a custom BatchStore implementation."
 ---
 
 `BatchPoller` depends on the async `BatchStore` protocol: `get(batch_id)`, `set(record)`, `delete(batch_id)`, and `list(delivered=None)`. Custom stores can implement that protocol without inheriting a Batchwork class.
