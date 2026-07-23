@@ -23,7 +23,7 @@ from batchwork.providers.shared import (
     request,
     request_json,
 )
-from batchwork.types import BatchLimits, BatchProvider, ProviderCredentials
+from batchwork.types import BatchLimits, BatchProvider, BatchStatus, ProviderCredentials
 
 _GOOGLE_INLINE_BATCH_MAX_BYTES = 20 * 1024 * 1024
 
@@ -1237,6 +1237,101 @@ async def test_xai_paginated_image_results_and_cancel() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        ["secret-stale-token", "secret-stale-token"],
+        ["secret-token-a", "secret-token-b", "secret-token-a"],
+    ],
+)
+async def test_xai_rejects_repeated_pagination_tokens_before_emitting_page(
+    tokens: list[str],
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        page = len(requests)
+        if page > len(tokens):
+            raise AssertionError("xAI pagination continued after a repeated token")
+        return httpx.Response(
+            200,
+            json={
+                "pagination_token": tokens[page - 1],
+                "results": [{"batch_request_id": f"request-{page}", "error_message": "failed"}],
+            },
+        )
+
+    emitted: list[str] = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = get_adapter(BatchProvider.XAI, http_client=client)
+        with pytest.raises(ProviderFailureError) as caught:
+            async for item in adapter.results("batch_1", ProviderCredentials(api_key="secret")):
+                emitted.append(item.custom_id)
+
+    assert caught.value.failure.kind is ProviderFailureKind.PROTOCOL
+    assert len(requests) == len(tokens)
+    assert emitted == [f"request-{page}" for page in range(1, len(tokens))]
+    assert "fingerprint" in str(caught.value)
+    assert all(token not in str(caught.value) for token in tokens)
+
+
+@pytest.mark.asyncio
+async def test_xai_follows_unique_pagination_tokens_until_provider_ends_results() -> None:
+    final_page = 1_001
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        page = len(requests)
+        return httpx.Response(
+            200,
+            json={
+                "pagination_token": f"next-{page}" if page < final_page else None,
+                "results": [{"batch_request_id": f"request-{page}", "error_message": "failed"}],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = get_adapter(BatchProvider.XAI, http_client=client)
+        emitted = [
+            item.custom_id
+            async for item in adapter.results("batch_1", ProviderCredentials(api_key="secret"))
+        ]
+
+    assert len(requests) == final_page
+    assert len(emitted) == final_page
+    assert emitted[-1] == f"request-{final_page}"
+
+
+@pytest.mark.asyncio
+async def test_xai_rejects_duplicate_result_ids_before_emitting_duplicate() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "pagination_token": "next" if len(requests) == 1 else None,
+                "results": [{"batch_request_id": "duplicate", "error_message": "failed"}],
+            },
+        )
+
+    emitted: list[str] = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = get_adapter(BatchProvider.XAI, http_client=client)
+        with pytest.raises(ProviderFailureError) as caught:
+            async for item in adapter.results("batch_1", ProviderCredentials(api_key="secret")):
+                emitted.append(item.custom_id)
+
+    assert caught.value.failure.kind is ProviderFailureKind.PROTOCOL
+    assert len(requests) == 2
+    assert emitted == ["duplicate"]
+    assert "duplicate result id" in str(caught.value)
+
+
+@pytest.mark.asyncio
 async def test_xai_text_submit_uploads_responses_jsonl_then_creates_batch() -> None:
     captured: list[httpx.Request] = []
 
@@ -1303,6 +1398,76 @@ async def test_xai_snapshot_maps_lifecycle_timestamps() -> None:
     assert snapshot.created_at is not None
     assert snapshot.completed_at is not None
     assert snapshot.expires_at is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("marker", "state", "expected"),
+    [
+        (
+            {"cancel_time": "2026-07-23T00:00:00Z"},
+            {"num_requests": 0, "num_pending": 0, "num_cancelled": 0},
+            BatchStatus.CANCELLED,
+        ),
+        (
+            {"cancel_time": "2026-07-23T00:00:00Z"},
+            {
+                "num_requests": 100,
+                "num_pending": 0,
+                "num_success": 80,
+                "num_error": 0,
+                "num_cancelled": 20,
+            },
+            BatchStatus.CANCELLED,
+        ),
+        (
+            {"cancel_by_xai_message": "invalid input file"},
+            {"num_requests": 1, "num_pending": 0, "num_cancelled": 0},
+            BatchStatus.CANCELLED,
+        ),
+        (
+            {"cancel_time": "2026-07-23T00:00:00Z"},
+            {"num_requests": 2, "num_pending": 1, "num_cancelled": 1},
+            BatchStatus.CANCELLING,
+        ),
+        (
+            {"cancel_time": "invalid", "cancel_by_xai_message": ""},
+            {
+                "num_requests": 1,
+                "num_pending": 0,
+                "num_success": 1,
+                "num_cancelled": 0,
+            },
+            BatchStatus.COMPLETED,
+        ),
+        (
+            {},
+            {"num_requests": 0, "num_pending": 0, "num_cancelled": 0},
+            BatchStatus.IN_PROGRESS,
+        ),
+        (
+            {},
+            {"num_requests": 2, "num_pending": 0, "num_cancelled": 2},
+            BatchStatus.CANCELLED,
+        ),
+    ],
+)
+async def test_xai_snapshot_uses_cancellation_markers_before_counters(
+    marker: dict[str, object],
+    state: dict[str, object],
+    expected: BatchStatus,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"batch_id": "batch_1", "state": state, **marker})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        snapshot = await get_adapter(BatchProvider.XAI, http_client=client).retrieve(
+            "batch_1", ProviderCredentials(api_key="secret")
+        )
+
+    assert snapshot.status is expected
+    assert snapshot.request_counts.completed == state.get("num_success", 0)
+    assert snapshot.request_counts.canceled == state.get("num_cancelled", 0)
 
 
 @pytest.mark.asyncio

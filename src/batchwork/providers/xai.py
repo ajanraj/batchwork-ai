@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from urllib.parse import urlencode
 
 import httpx
 
+from batchwork._provider_failure import ProviderFailure, ProviderFailureError, ProviderFailureKind
 from batchwork._typing import is_string_mapping
 from batchwork.body import BuiltRequest
 from batchwork.types import (
@@ -33,6 +35,17 @@ from .shared import (
     usage_from_body,
 )
 
+_RESULT_PAGE_SIZE = 100
+_TOKEN_FINGERPRINT_LENGTH = 12
+
+
+def _token_fingerprint(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()[:_TOKEN_FINGERPRINT_LENGTH]
+
+
+def _pagination_failure(message: str) -> ProviderFailureError:
+    return ProviderFailureError(message, ProviderFailure(ProviderFailureKind.PROTOCOL))
+
 
 class XAIAdapter:
     id = BatchProvider.XAI
@@ -53,7 +66,15 @@ class XAIAdapter:
         pending = state.get("num_pending")
         total = state.get("num_requests") if isinstance(state.get("num_requests"), int) else 0
         cancelled = state.get("num_cancelled") if isinstance(state.get("num_cancelled"), int) else 0
-        if not isinstance(pending, int) or total == 0 or pending > 0:
+        cancel_message = raw.get("cancel_by_xai_message")
+        has_cancellation_marker = timestamp(raw.get("cancel_time")) is not None or (
+            isinstance(cancel_message, str) and bool(cancel_message)
+        )
+        if has_cancellation_marker and isinstance(pending, int) and pending > 0:
+            status = "cancelling"
+        elif has_cancellation_marker:
+            status = "cancelled"
+        elif not isinstance(pending, int) or total == 0 or pending > 0:
             status = "in_progress"
         elif cancelled == total:
             status = "cancelled"
@@ -130,8 +151,12 @@ class XAIAdapter:
     ) -> AsyncIterator[BatchResult]:
         batch_id = simple_provider_id("xAI batch id", id)
         token: str | None = None
+        observed_tokens: set[str] = set()
+        emitted_ids: set[str] = set()
+        page_count = 0
+        emitted_count = 0
         while True:
-            query: dict[str, object] = {"limit": 100}
+            query: dict[str, object] = {"limit": _RESULT_PAGE_SIZE}
             if token:
                 query["pagination_token"] = token
             raw = await request_json(
@@ -140,15 +165,38 @@ class XAIAdapter:
                 f"{self._base(credentials)}/batches/{batch_id}/results?{urlencode(query)}",
                 headers=self._headers(credentials),
             )
+            page_count += 1
+            raw_token = raw.get("pagination_token")
+            next_token = raw_token if isinstance(raw_token, str) and raw_token else None
+            if next_token is not None and next_token in observed_tokens:
+                last_safe_token = token if token is not None else next_token
+                raise _pagination_failure(
+                    "batchwork: xAI result pagination repeated a continuation token on page "
+                    f"{page_count}; stopped before emitting that page after {emitted_count} "
+                    "records (last safe token fingerprint: "
+                    f"sha256:{_token_fingerprint(last_safe_token)})."
+                )
+            if next_token is not None:
+                observed_tokens.add(next_token)
             items = raw.get("results")
             if isinstance(items, Sequence):
                 for item in items:
                     if is_string_mapping(item):
-                        yield self._result(item)
-            raw_token = raw.get("pagination_token")
-            token = raw_token if isinstance(raw_token, str) and raw_token else None
-            if token is None:
+                        raw_id = item.get("batch_request_id")
+                        if isinstance(raw_id, str) and raw_id:
+                            if raw_id in emitted_ids:
+                                raise _pagination_failure(
+                                    "batchwork: xAI result pagination returned a duplicate result "
+                                    f"id after {emitted_count} records; stopped before emitting "
+                                    "the duplicate."
+                                )
+                            emitted_ids.add(raw_id)
+                        result = self._result(item)
+                        emitted_count += 1
+                        yield result
+            if next_token is None:
                 return
+            token = next_token
 
     def _result(self, item: Mapping[str, object]) -> BatchResult:
         raw_id = item.get("batch_request_id")
