@@ -74,6 +74,85 @@ async def test_remote_download_is_bounded_and_does_not_auto_redirect(monkeypatch
     ]
 
 
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [("content-length", "bogus")],
+        [("content-length", "5"), ("content-length", "5")],
+    ],
+)
+@pytest.mark.asyncio
+async def test_remote_download_treats_invalid_content_length_as_unknown(
+    monkeypatch: pytest.MonkeyPatch, headers: list[tuple[str, str]]
+) -> None:
+    async def resolve_public_addresses(_host: str, _port: int) -> tuple[str, ...]:
+        return ("93.184.216.34",)
+
+    monkeypatch.setattr(media_module, "_resolve_public_addresses", resolve_public_addresses)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"12345", headers=headers)
+
+    resolved = await DefaultMediaResolver(transport=httpx.MockTransport(handler)).resolve(
+        "https://example.com/file.txt", media_type="text/plain", max_bytes=5
+    )
+
+    assert resolved.data == b"12345"
+
+
+@pytest.mark.parametrize("declared_length", ["bogus", "1", "-1"])
+@pytest.mark.asyncio
+async def test_remote_download_stream_limit_overrides_untrusted_content_length(
+    monkeypatch: pytest.MonkeyPatch, declared_length: str
+) -> None:
+    async def resolve_public_addresses(_host: str, _port: int) -> tuple[str, ...]:
+        return ("93.184.216.34",)
+
+    monkeypatch.setattr(media_module, "_resolve_public_addresses", resolve_public_addresses)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"123456",
+            headers={"content-length": declared_length},
+        )
+
+    resolver = DefaultMediaResolver(transport=httpx.MockTransport(handler))
+    with pytest.raises(MediaResolutionError, match="media exceeds the 5 byte limit") as captured:
+        await resolver.resolve("https://example.com/file.txt", media_type="text/plain", max_bytes=5)
+
+    assert declared_length not in str(captured.value)
+
+
+@pytest.mark.asyncio
+async def test_remote_download_rejects_declared_oversize_before_reading_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def resolve_public_addresses(_host: str, _port: int) -> tuple[str, ...]:
+        return ("93.184.216.34",)
+
+    monkeypatch.setattr(media_module, "_resolve_public_addresses", resolve_public_addresses)
+
+    class UnreadStream(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.was_read = False
+
+        async def __aiter__(self):
+            self.was_read = True
+            yield b"123456"
+
+    stream = UnreadStream()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream, headers={"content-length": "6"})
+
+    resolver = DefaultMediaResolver(transport=httpx.MockTransport(handler))
+    with pytest.raises(MediaResolutionError, match="media exceeds the 5 byte limit"):
+        await resolver.resolve("https://example.com/file.txt", media_type="text/plain", max_bytes=5)
+
+    assert stream.was_read is False
+
+
 @pytest.mark.asyncio
 async def test_pinned_backend_tries_each_validated_address(monkeypatch) -> None:
     async def resolve_public_addresses(host: str, port: int) -> tuple[str, ...]:

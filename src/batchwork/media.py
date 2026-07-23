@@ -531,7 +531,15 @@ class DefaultMediaResolver:
                                 f"batchwork: media download returned HTTP {response.status_code}"
                             ) from error
                         length = response.headers.get("content-length")
-                        if length is not None and int(length) > max_bytes:
+                        try:
+                            declared_length = int(length) if length is not None else None
+                        except ValueError:
+                            declared_length = None
+                        if (
+                            declared_length is not None
+                            and declared_length >= 0
+                            and declared_length > max_bytes
+                        ):
                             raise _MediaLimitExceededError(
                                 f"batchwork: media exceeds the {max_bytes} byte limit"
                             )
