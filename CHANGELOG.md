@@ -4,14 +4,19 @@ All notable changes to `batchwork-ai` are documented here. The format follows [K
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-23
+
 ### Changed
 
-- Python `Batchwork` submissions now reject unsupported canonical settings, provider options, collisions, and submission-level batch metadata instead of silently discarding them. Low-level body builders retain their explicit `strict` control.
+- Python `Batchwork` submissions now reject unsupported canonical settings, provider options, collisions, and non-empty unsupported submission-level batch metadata instead of silently discarding them. Empty metadata mappings are treated as omitted, and low-level body builders retain their explicit `strict` control.
 - `BatchJob.wait()` now requires a positive finite polling interval and a finite non-negative timeout, and retries transient provider reads up to three total attempts while honoring bounded `Retry-After` delays.
+- Terminal `BatchJob` snapshots are reused when retrieving results, avoiding redundant provider status requests.
 
 ### Fixed
 
 - Malformed media `Content-Length` headers now fall back to the streamed-byte limit instead of leaking `ValueError`.
+- xAI cancellation markers are normalized correctly, result pagination rejects repeated continuation tokens and duplicate result IDs, and a 10,000-page ceiling stops unique-token loops before another request.
+- Unknown, missing, or malformed OpenAI-compatible and Mistral batch statuses now fail as non-retryable provider protocol errors instead of being treated as in progress.
 
 ### Security
 
@@ -71,6 +76,7 @@ First release published to PyPI as `batchwork-ai`.
 
 Initial tagged version; superseded by 0.1.1 for the PyPI name change.
 
+[0.2.3]: https://github.com/ajanraj/batchwork-ai/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/ajanraj/batchwork-ai/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ajanraj/batchwork-ai/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ajanraj/batchwork-ai/compare/v0.1.1...v0.2.0
